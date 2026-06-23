@@ -2,9 +2,9 @@
 
 [![skills.sh](https://skills.sh/b/zyadmad56-spec/data-fetcher-pipeline)](https://skills.sh/zyadmad56-spec/data-fetcher-pipeline)
 
-A focused **ETL pipeline skill** for coding agents: a safety-first extractor that safely fetches, sanitizes, and converts massive datasets without breaking your local machine.
+A focused data fetching pipeline for coding agents that extracts, downloads, and streams data while managing rate limits to prevent IP bans.
 
-Best use: let your agent use this skill whenever you need to fetch data from global sources (Kaggle, WHO, World Bank, SEC EDGAR), safely scrape behind rate limits, or convert massive files. It runs as a self-contained, protective ETL system.
+Best use: let your agent use this pipeline to reliably retrieve datasets from external sources before starting analysis or model training. This is exclusively a retrieval tool; it does not perform data cleaning or imputation.
 
 ## Install
 
@@ -20,14 +20,6 @@ Install the package:
 npx skills add zyadmad56-spec/data-fetcher-pipeline
 ```
 
-Install for a specific agent:
-
-```bash
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent codex
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent claude-code
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent cursor
-```
-
 Install globally:
 
 ```bash
@@ -36,27 +28,52 @@ npx skills add zyadmad56-spec/data-fetcher-pipeline --global
 
 Works with Claude Code, Codex, Cursor, OpenCode, and other supported agents via the [Skills CLI](https://github.com/vercel-labs/skills).
 
-## How to use it
+## Setup
 
-Run the pipeline by simply asking your agent for data:
+You must configure your API keys as environment variables before running the pipeline. The agent will read these variables at runtime.
 
-```text
-Fetch the Inside Airbnb data for London and save it as Parquet.
-Download the 3-million-row SEC EDGAR dataset for 2024.
-Get the WHO dataset, skip the conversion, and extract a data dictionary.
+```bash
+export KAGGLE_USERNAME="your_username"
+export KAGGLE_KEY="your_api_key"
+export SEC_API_KEY="your_sec_key"
 ```
 
-## How it protects your workspace
+For Windows PowerShell:
+```powershell
+$env:KAGGLE_USERNAME="your_username"
+$env:KAGGLE_KEY="your_api_key"
+```
 
-| Feature | Kicks in when | Catches | Pair with |
-| --- | --- | --- | --- |
-| `OOM Protection` | Converting massive datasets | Out-of-memory crashes on Excel conversions >1M rows | - |
-| `Safe Dependencies` | The script needs external libraries | Silent, global Python environment corruption | - |
-| `Zero-Clutter` | Quick data validations & row counts | Leftover `test.py` or temporary scripts in your root | `clean-code-guard` |
-| `Auto-Doc` | Finalizing dataset extraction | `fpdf` Unicode crashes; missing data dictionaries | - |
+## How to use it
 
-## The skill
+Run the pipeline by specifying your target data source and query:
 
-### data-fetcher-pipeline
+```text
+Use the data-fetcher-pipeline to get the latest COVID-19 dataset from WHO.
+Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL.
+Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
+```
 
-Extracts data through a strict 7-stage execution funnel (Routing → Scouting → Approval → Stealth Extraction → Validation → Format Standardization → Documentation). It strictly aborts fatal conversions, prevents silent dependency installs, and natively generates Kaggle-grade Markdown data dictionaries.
+## Which pipeline to run
+
+| Source | Retrieves | Typical use case |
+| --- | --- | --- |
+| `Kaggle` | Datasets and competition data | Data Scientists training machine learning models or testing predictive algorithms. |
+| `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | Data Analysts and BI teams performing financial modeling or market analysis. |
+| `World Bank & WHO` | Socioeconomic and health metrics | Researchers and Economists running macro-level analyses. |
+
+The pipeline enforces sequential fetching and polite-request delays across all these sources to comply with server limitations and ensure stable, continuous extraction.
+
+## Repository shape
+
+```text
+data-fetcher-pipeline/
+├── README.md
+├── SKILL.md
+├── requirements.txt
+├── data-fetcher-pipeline.skill
+├── references/
+│   └── source-constraints.md
+└── scripts/
+    └── fetcher_engine.py
+```
