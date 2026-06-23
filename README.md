@@ -2,9 +2,9 @@
 
 [![skills.sh](https://skills.sh/b/zyadmad56-spec/data-fetcher-pipeline)](https://skills.sh/zyadmad56-spec/data-fetcher-pipeline)
 
-A focused data fetching pipeline for coding agents that extracts, downloads, and streams data while managing rate limits to prevent IP bans.
+A focused data-fetching pipeline for coding agents: A professional-grade retrieval tool for fetching, downloading, and streaming datasets for Data Science, ML, and BI workflows.
 
-Best use: let your agent use this pipeline to reliably retrieve datasets from external sources before starting analysis or model training. This is exclusively a retrieval tool; it does not perform data cleaning or imputation.
+Best use: let your agent use this pipeline to securely retrieve data from global sources, managing rate limits and environment keys before starting any downstream analysis. This is strictly a retrieval tool; it does not clean or impute data.
 
 ## Install
 
@@ -20,6 +20,14 @@ Install the package:
 npx skills add zyadmad56-spec/data-fetcher-pipeline
 ```
 
+Install for a specific agent:
+
+```bash
+npx skills add zyadmad56-spec/data-fetcher-pipeline --agent codex
+npx skills add zyadmad56-spec/data-fetcher-pipeline --agent claude-code
+npx skills add zyadmad56-spec/data-fetcher-pipeline --agent cursor
+```
+
 Install globally:
 
 ```bash
@@ -28,25 +36,9 @@ npx skills add zyadmad56-spec/data-fetcher-pipeline --global
 
 Works with Claude Code, Codex, Cursor, OpenCode, and other supported agents via the [Skills CLI](https://github.com/vercel-labs/skills).
 
-## Setup
-
-You must configure your API keys as environment variables before running the pipeline. The agent will read these variables at runtime.
-
-```bash
-export KAGGLE_USERNAME="your_username"
-export KAGGLE_KEY="your_api_key"
-export SEC_API_KEY="your_sec_key"
-```
-
-For Windows PowerShell:
-```powershell
-$env:KAGGLE_USERNAME="your_username"
-$env:KAGGLE_KEY="your_api_key"
-```
-
 ## How to use it
 
-Run the pipeline by specifying your target data source and query:
+Configure your API keys as environment variables (`export KAGGLE_KEY="..."`) before running. Run the pipeline by asking your agent for data:
 
 ```text
 Use the data-fetcher-pipeline to get the latest COVID-19 dataset from WHO.
@@ -58,18 +50,19 @@ Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 
 | Source | Retrieves | Typical use case |
 | --- | --- | --- |
-| `Kaggle` | Datasets and competition data | Data Scientists training machine learning models or testing predictive algorithms. |
-| `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | Data Analysts and BI teams performing financial modeling or market analysis. |
-| `World Bank & WHO` | Socioeconomic and health metrics | Researchers and Economists running macro-level analyses. |
+| `Kaggle` | Datasets and competition data | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
+| `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
+| `World Bank & WHO` | Socioeconomic and health metrics | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |
 
 The pipeline enforces sequential fetching and polite-request delays across all these sources to comply with server limitations and ensure stable, continuous extraction.
 
-## Repository shape
+## Repository Shape
 
 ```text
 data-fetcher-pipeline/
 ├── README.md
 ├── SKILL.md
+├── LICENSE
 ├── requirements.txt
 ├── data-fetcher-pipeline.skill
 ├── references/
