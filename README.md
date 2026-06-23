@@ -87,5 +87,6 @@ data-fetcher-pipeline/
 │   └── source-constraints.md
 └── scripts/
     ├── fetcher_engine.py
+    ├── run_pipeline.sh
     └── setup_dataset_dir.sh
 ```
