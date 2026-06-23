@@ -13,8 +13,9 @@ if [ -z "$TOPIC" ]; then
     exit 1
 fi
 
-# 1. Locate the Desktop directory
-DESKTOP_DIR="${HOME}/Desktop"
+# 1. Locate the output directory (Docker-friendly)
+# Use OUTPUT_DIR environment variable if set, otherwise fallback to standard Desktop
+BASE_DIR="${OUTPUT_DIR:-${HOME}/Desktop}"
 
 # 2. Sanitize the Source URL
 CLEAN_SOURCE=$(echo "$SOURCE" | sed -E 's|^https?://||ig; s|^www\.||ig')
@@ -27,7 +28,7 @@ CLEAN_FORMAT=$(echo "$FORMAT" | tr '[:lower:]' '[:upper:]')
 CLEAN_TOPIC=$(echo "$TOPIC" | sed -E 's/[^a-zA-Z0-9_-]+/_/g' | tr '[:upper:]' '[:lower:]')
 
 # 4. Construct the full path
-TARGET_DIR="${DESKTOP_DIR}/datasets_of_data-fetcher-pipeline/${CLEAN_SOURCE}/${CLEAN_FORMAT}/${CLEAN_TOPIC}"
+TARGET_DIR="${BASE_DIR}/datasets_of_data-fetcher-pipeline/${CLEAN_SOURCE}/${CLEAN_FORMAT}/${CLEAN_TOPIC}"
 
 # 5. Create the structure safely
 mkdir -p "$TARGET_DIR"

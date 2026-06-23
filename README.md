@@ -44,6 +44,20 @@ Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL.
 Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 ```
 
+## Running with Docker
+
+When running the pipeline within a Docker container, the downloaded files will be written to an isolated filesystem unless you explicitly map a volume to your host machine.
+
+1. Create a `.env` file based on `.env.example` and populate your API keys.
+2. Run the container, passing the `.env` file and mapping your host's Desktop to the container's `/output` directory. The pipeline will automatically detect the `OUTPUT_DIR` environment variable.
+
+```bash
+docker run --env-file .env \
+  -e OUTPUT_DIR=/output \
+  -v ~/Desktop:/output \
+  your-docker-image-name
+```
+
 ## Smart Auto-Organization
 
 The pipeline automatically sanitizes complex URLs and smartly organizes your downloads into a clean, auto-generated directory structure directly on your Desktop:
@@ -67,6 +81,7 @@ data-fetcher-pipeline/
 ├── SKILL.md
 ├── LICENSE
 ├── requirements.txt
+├── .env.example
 ├── data-fetcher-pipeline.skill
 ├── references/
 │   └── source-constraints.md
