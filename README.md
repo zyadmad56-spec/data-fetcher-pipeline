@@ -1,6 +1,5 @@
 # data-fetcher-pipeline
 
-[![skills.sh](https://skills.sh/b/zyadmad56-spec/data-fetcher-pipeline)](https://skills.sh/zyadmad56-spec/data-fetcher-pipeline)
 
 A focused data-fetching pipeline for coding agents: A professional-grade retrieval tool for fetching, downloading, and streaming datasets for Data Science, ML, and BI workflows.
 
