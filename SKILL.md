@@ -16,6 +16,11 @@ A focused data-fetching pipeline for coding agents that extracts, downloads, and
    export SEC_API_KEY="your_sec_key"
    ```
 
+## Smart Auto-Organization
+
+The pipeline automatically sanitizes complex URLs and smartly organizes your downloads into a clean, auto-generated directory structure directly on your Desktop:
+`Desktop/datasets_of_data-fetcher-pipeline/{source}/{format}/{topic}`
+
 ## How to use
 
 Run the pipeline by specifying your target data source:

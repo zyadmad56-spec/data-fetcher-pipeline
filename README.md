@@ -1,6 +1,5 @@
 # data-fetcher-pipeline
 
-
 A focused data-fetching pipeline for coding agents: A professional-grade retrieval tool for fetching, downloading, and streaming datasets for Data Science, ML, and BI workflows.
 
 Best use: let your agent use this pipeline to securely retrieve data from global sources, managing rate limits and environment keys before starting any downstream analysis. This is strictly a retrieval tool; it does not clean or impute data.
@@ -45,6 +44,11 @@ Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL.
 Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 ```
 
+## Smart Auto-Organization
+
+The pipeline automatically sanitizes complex URLs and smartly organizes your downloads into a clean, auto-generated directory structure directly on your Desktop:
+`Desktop/datasets_of_data-fetcher-pipeline/{source}/{format}/{topic}`
+
 ## Which pipeline to run
 
 | Source | Retrieves | Typical use case |
@@ -67,5 +71,6 @@ data-fetcher-pipeline/
 ├── references/
 │   └── source-constraints.md
 └── scripts/
-    └── fetcher_engine.py
+    ├── fetcher_engine.py
+    └── setup_dataset_dir.sh
 ```
