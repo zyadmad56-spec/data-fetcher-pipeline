@@ -1,42 +1,46 @@
-# data-fetcher-pipeline
+# 🚀 Data Fetcher Pipeline
 
-A focused data-fetching pipeline for coding agents: A professional-grade retrieval tool for fetching, downloading, and streaming datasets for Data Science, ML, and BI workflows.
+**The Ultimate Time Saver for Data Science & ML.**
 
-Best use: let your agent use this pipeline to securely retrieve data from global sources, managing rate limits and environment keys before starting any downstream analysis. This is strictly a retrieval tool; it does not clean or impute data.
+Welcome to the smartest, most user-friendly data fetching pipeline ever built. We designed this to give you back your most valuable asset: **time**. Say goodbye to manual searching, endless clicking, messy downloads, and writing boilerplate extraction code.
 
-## Install
+The Data Fetcher Pipeline handles everything from guided setup to beautifully organized workspaces, so you can focus entirely on what you do best: analyzing data and building models.
 
-Browse the package first:
+## ✨ Why You Will Love This
 
-```bash
-npx skills add zyadmad56-spec/data-fetcher-pipeline --list
+* **The Ultimate Time Saver:** We've completely eliminated the tedious hours of downloading and organizing data. The pipeline automatically searches, extracts, and organizes data directly for you.
+* **Purity of Data (Raw & Untampered):** Data integrity is everything. The tool fetches your data exactly as it is from the source—100% RAW—without any hidden manipulations, imputations, or alterations. You always know exactly what you are starting with.
+* **Format Flexibility & Conversion:** Download data in your preferred formats. The pipeline handles all necessary format conversions seamlessly, ensuring your data is ready to use immediately.
+* **Automated Data Dictionaries:** Never wonder what a column means again! We automatically generate a highly descriptive explanation file (data dictionary) alongside every downloaded dataset.
+* **Smart Desktop Organization:** A cluttered Desktop is a cluttered mind. Our pipeline takes over file management and creates an incredibly clean, structured directory natively on your machine.
+
+## 🛠️ The All-in-One Setup Wizard
+
+We've completely overhauled our onboarding experience. No more manually editing hidden `.env` files. 
+
+Upon your first run, our **Smart Interactive Setup Wizard** will ask if you'd like to configure your API keys. You can set them all up at once or use our **Lazy Loading** feature to enter them only when you need them. All credentials are saved securely in an OS-standard JSON config file (`~/.config/data-fetcher-pipeline/config.json`) keeping your system absolutely safe.
+
+## 📂 Visualizing the Magic
+
+Curious where your files go? Here is exactly how elegantly the pipeline organizes your data directly on your Desktop. No more "Downloads" folder chaos!
+
+```text
+📦 ~/Desktop/datasets_of_data-fetcher-pipeline/
+ ┣ 📂 kaggle/
+ ┃ ┗ 📂 CSV/
+ ┃   ┗ 📂 retail_sales_data_2024/
+ ┃     ┣ 📜 _raw.csv
+ ┃     ┗ 📜 dataset_description.txt
+ ┗ 📂 openml_org/
+   ┗ 📂 JSON/
+     ┗ 📂 healthcare_metrics/
+       ┣ 📜 _raw.json
+       ┗ 📜 dataset_description.txt
 ```
 
-Install the package:
+## 🚀 How to Use It
 
-```bash
-npx skills add zyadmad56-spec/data-fetcher-pipeline
-```
-
-Install for a specific agent:
-
-```bash
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent codex
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent claude-code
-npx skills add zyadmad56-spec/data-fetcher-pipeline --agent cursor
-```
-
-Install globally:
-
-```bash
-npx skills add zyadmad56-spec/data-fetcher-pipeline --global
-```
-
-Works with Claude Code, Codex, Cursor, OpenCode, and other supported agents via the [Skills CLI](https://github.com/vercel-labs/skills).
-
-## How to use it
-
-Configure your API keys as environment variables (`export KAGGLE_KEY="..."`) before running. Run the pipeline by asking your agent for data:
+Just ask your agent for data!
 
 ```text
 Use the data-fetcher-pipeline to get the latest COVID-19 dataset from WHO.
@@ -44,64 +48,17 @@ Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL.
 Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 ```
 
-### ✨ New Feature: OpenML Intelligent Search
+### 🧠 OpenML Intelligent Search
+Looking for something specific but don't know the dataset name? Just run the interactive `run_pipeline.sh` script, enter your search query (like "finance"), and our intelligent OpenML integration will find the top-ranked dataset and pull it down instantly!
 
-The pipeline now features **OpenML integration** with a smart, interactive search mechanism! You can now easily search for diverse ML datasets (like "finance" or "healthcare") directly from the interactive `run_pipeline.sh` wizard, and the pipeline will dynamically find the top-ranked dataset, extract it, and cleanly apply our strict `CSV` formatting and sanitized topic-categorization auto-rules!
+## ⚙️ Installation
 
-## Running with Docker
-
-When running the pipeline within a Docker container, the downloaded files will be written to an isolated filesystem unless you explicitly map a volume to your host machine.
-
-1. Create a `.env` file based on `.env.example` and populate your API keys.
-2. Run the container, passing the `.env` file and mapping your host's Desktop to the container's `/output` directory. The pipeline will automatically detect the `OUTPUT_DIR` environment variable.
-
+Browse the package:
 ```bash
-docker run --env-file .env \
-  -e OUTPUT_DIR=/output \
-  -v ~/Desktop:/output \
-  your-docker-image-name
+npx skills add zyadmad56-spec/data-fetcher-pipeline --list
 ```
 
-## Smart Auto-Organization
-
-The pipeline automatically sanitizes complex URLs and smartly organizes your downloads into a clean, auto-generated directory structure directly on your Desktop:
-`Desktop/datasets_of_data-fetcher-pipeline/{source}/{format}/{topic}`
-
-## Security & Permissions Transparency
-
-When installing this skill, automated security scanners (like Snyk or Socket) may flag the package with a "Medium Risk" alert. **This is an expected false-positive.**
-
-This skill is flagged because of its interactive onboarding script (`run_pipeline.sh`) and auto-organization logic which require:
-1. **Dynamic Environment Variable Handling:** The script interactively asks for and auto-populates your local `.env` file with API keys. 
-2. **Host File System Access:** It uses standard Unix commands (`mkdir -p`) to safely auto-generate organized folders directly on your host machine's Desktop.
-
-We are fully transparent about this: the code is strictly open-source, contains no trackers, and operates entirely locally without ever transmitting your keys anywhere other than the official data sources you explicitly request.
-
-## Which pipeline to run
-
-| Source | Retrieves | Typical use case |
-| --- | --- | --- |
-| `OpenML` (NEW!) | Diverse machine learning datasets via intelligent search | **Data Scientists** quickly searching and downloading top-ranked ML datasets. |
-| `Kaggle` | Datasets and competition data | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
-| `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
-| `World Bank & WHO` | Socioeconomic and health metrics | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |
-
-The pipeline enforces sequential fetching and polite-request delays across all these sources to comply with server limitations and ensure stable, continuous extraction.
-
-## Repository Shape
-
-```text
-data-fetcher-pipeline/
-├── README.md
-├── SKILL.md
-├── LICENSE
-├── requirements.txt
-├── .env.example
-├── data-fetcher-pipeline.skill
-├── references/
-│   └── source-constraints.md
-└── scripts/
-    ├── fetcher_engine.py
-    ├── run_pipeline.sh
-    └── setup_dataset_dir.sh
+Install globally:
+```bash
+npx skills add zyadmad56-spec/data-fetcher-pipeline --global
 ```

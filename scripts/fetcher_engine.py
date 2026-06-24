@@ -3,23 +3,81 @@ import sys
 import argparse
 import time
 import random
+import json
 import pandas as pd
 from abc import ABC, abstractmethod
-from dotenv import load_dotenv
+from typing import Dict, Optional
 
 # Enforce UTF-8 to prevent terminal encoding errors
 sys.stdout.reconfigure(encoding='utf-8')
 
-# Load environment variables from the user's Current Working Directory (CWD), not the skill directory.
-load_dotenv(dotenv_path=os.path.join(os.getcwd(), '.env'))
+def setup_wizard() -> Dict[str, str]:
+    config_dir = os.path.expanduser("~/.config/data-fetcher-pipeline")
+    config_file = os.path.join(config_dir, "config.json")
+    
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+            
+    print("Welcome! Would you like to set up all your API keys right now to unlock all features? (y/n): ", end="")
+    choice = input().strip().lower()
+    
+    config: Dict[str, str] = {}
+    
+    if choice == 'y':
+        print("\n1. Kaggle: Go to https://www.kaggle.com/settings and click 'Create New Token'. Paste the Username here (or press Enter to skip): ", end="")
+        k_user = input().strip()
+        if k_user: config["KAGGLE_USERNAME"] = k_user
+        
+        print("2. Kaggle API Key: Paste the Key here (or press Enter to skip): ", end="")
+        k_key = input().strip()
+        if k_key: config["KAGGLE_KEY"] = k_key
+        
+        print("3. SEC EDGAR: Go to https://www.sec.gov/edgar/searchedgar/companysearch.html and get your access. Paste your SEC API key here (or press Enter to skip): ", end="")
+        s_key = input().strip()
+        if s_key: config["SEC_API_KEY"] = s_key
+        
+        print("4. FRED: Go to https://fred.stlouisfed.org/docs/api/api_key.html and request an API key. Paste it here (or press Enter to skip): ", end="")
+        f_key = input().strip()
+        if f_key: config["FRED_API_KEY"] = f_key
+        
+        print("\n[Wizard] Keys securely captured!")
+    else:
+        print("\n[Wizard] Skipping initial setup. You'll be prompted for keys only when needed (Lazy Loading).")
+        
+    os.makedirs(config_dir, exist_ok=True)
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4)
+        
+    return config
+
+def get_api_key(key_name: str, config: Dict[str, str], prompt_msg: str) -> str:
+    if key_name in config and config[key_name]:
+        return config[key_name]
+    
+    print(f"\n[Lazy Load] Missing required key: {key_name}")
+    print(prompt_msg)
+    val = input().strip()
+    if not val:
+        raise ValueError(f"Required API key '{key_name}' was not provided.")
+        
+    config[key_name] = val
+    config_dir = os.path.expanduser("~/.config/data-fetcher-pipeline")
+    config_file = os.path.join(config_dir, "config.json")
+    os.makedirs(config_dir, exist_ok=True)
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4)
+        
+    return val
 
 class BaseFetcher(ABC):
     """
     Abstract Base Class enforcing the architectural constraints of the data-fetcher-pipeline.
     """
-    def __init__(self, query: str, outdir: str):
+    def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
         self.query = query
         self.outdir = outdir
+        self.config = config
         os.makedirs(self.outdir, exist_ok=True)
 
     @abstractmethod
@@ -43,11 +101,23 @@ class BaseFetcher(ABC):
         
         print("[Validator] Payload passed Null-Density Check.")
 
-    def save_csv(self, df: pd.DataFrame, filename: str):
+    def save_csv(self, df: pd.DataFrame, filename: str) -> None:
         """Absolute Raw Data Preservation (Zero-Cleaning)"""
         filepath = os.path.join(self.outdir, filename)
         df.to_csv(filepath, index=False)
         print(f"[Success] Raw dataset saved securely to {filepath}")
+        
+        dict_path = os.path.join(self.outdir, "dataset_description.txt")
+        with open(dict_path, "w", encoding="utf-8") as f:
+            f.write(f"Dataset Topic: {self.query}\n")
+            f.write(f"Total Rows: {len(df)}\n")
+            f.write(f"Total Columns: {len(df.columns)}\n")
+            f.write(f"Format: Raw CSV\n")
+            f.write("\nColumns present:\n")
+            for col in df.columns:
+                null_count = df[col].isnull().sum()
+                f.write(f"- {col} (Nulls: {null_count})\n")
+        print(f"[Success] Automated Data Dictionary generated at {dict_path}")
 
     def run(self):
         """Execution Flow Controller"""
@@ -80,14 +150,12 @@ class YahooFinanceFetcher(BaseFetcher):
 
 
 class FREDFetcher(BaseFetcher):
-    def scout(self):
-        env_path = os.path.join(os.getcwd(), '.env')
-        if not os.path.exists(env_path):
-            raise FileNotFoundError(f"Environment-Isolated Credentials Error: The required '.env' file is missing from your workspace ({env_path}).")
-        
-        self.api_key = os.environ.get("FRED_API_KEY")
-        if not self.api_key:
-            raise ValueError("Environment-Isolated Credentials Error: FRED_API_KEY not found in the local .env file.")
+    def scout(self) -> None:
+        self.api_key = get_api_key(
+            "FRED_API_KEY", 
+            self.config, 
+            "Please go to https://fred.stlouisfed.org/docs/api/api_key.html and paste your FRED API Key: "
+        )
         print("[Scout] Credentials validated.")
 
     def extract(self) -> pd.DataFrame:
@@ -163,8 +231,8 @@ class GenericFetcher(BaseFetcher):
 
 
 class OpenMLFetcher(BaseFetcher):
-    def __init__(self, query: str, outdir: str) -> None:
-        super().__init__(query, outdir)
+    def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
+        super().__init__(query, outdir, config)
         self.target_dataset_id: int = -1
         self.dataset_name: str = ""
 
@@ -223,7 +291,7 @@ class OpenMLFetcher(BaseFetcher):
         return X
 
 
-def get_fetcher(source: str, query: str, outdir: str) -> BaseFetcher:
+def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) -> BaseFetcher:
     """Strategy Factory mapping CLI sources to OOP Classes."""
     fetchers = {
         "yfinance": YahooFinanceFetcher,
@@ -232,10 +300,12 @@ def get_fetcher(source: str, query: str, outdir: str) -> BaseFetcher:
         "openml": OpenMLFetcher,
     }
     fetcher_class = fetchers.get(source.lower(), GenericFetcher)
-    return fetcher_class(query, outdir)
+    return fetcher_class(query, outdir, config)
 
 
-def main():
+def main() -> None:
+    config = setup_wizard()
+    
     parser = argparse.ArgumentParser(description="Data Fetcher Background Engine")
     parser.add_argument("--source", required=True, help="Target data platform (e.g., yfinance, fred, airbnb)")
     parser.add_argument("--query", required=True, help="Topic, ticker symbol, or series ID")
@@ -249,7 +319,7 @@ def main():
         print(f"[Engine] Imposing humanized delay of {delay:.2f} seconds to simulate human traffic...")
         time.sleep(delay)
         
-        fetcher = get_fetcher(args.source, args.query, args.outdir)
+        fetcher = get_fetcher(args.source, args.query, args.outdir, config)
         fetcher.run()
         print("[Engine] Extraction Complete. Pipeline exiting successfully.")
         
