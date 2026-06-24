@@ -37,7 +37,27 @@ The pipeline dynamically provisions directory structures to prevent filesystem p
 
 ## 3. Deep Technical Guide
 
-### CLI & Agent Integration
+### Hybrid Installation Strategy
+
+The pipeline now supports dual installation vectors to maximize OS compatibility and user preference, while retaining full compatibility with AI agent orchestration.
+
+**Method 1: Global CLI (Recommended / Windows-Friendly)**
+Deploy the Python package globally. This automatically resolves dependencies and exposes the `data-fetcher` executable to your system path.
+```bash
+pip install .
+```
+You can now execute the engine directly from any directory:
+```bash
+data-fetcher --source openml --query "finance"
+```
+
+**Method 2: Interactive Bash (Linux/Mac/Advanced Users)**
+Retain the classic Unix approach by invoking the guided shell wizard directly. This method seamlessly manages interactive prompts and Python handoffs.
+```bash
+./scripts/run_pipeline.sh
+```
+
+#### AI Agent Deployment Context
 
 Browse the package registry:
 
@@ -94,14 +114,14 @@ docker run --env-file .env \
   your-docker-image-name
 ```
 
-### Supported Endpoints
+### 🌐 Supported Data Sources
 
-| Source | Retrieves | Typical use case |
+| Source | Description | Typical use case |
 | --- | --- | --- |
-| `OpenML` | Diverse machine learning datasets | **Data Scientists** and **ML Engineers** querying global index for top-ranked ML datasets. |
-| `Kaggle` | Datasets and competition data | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
-| `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
-| `World Bank & WHO` | Socioeconomic and health metrics | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |
+| **OpenML** | An inclusive, open-source machine learning platform for dynamically searching and retrieving rich datasets and experiments. | **Data Scientists** and **ML Engineers** querying global index for top-ranked ML datasets. |
+| **Kaggle** | The premier platform for data science competitions and massive, diverse machine learning datasets. | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
+| **SEC (EDGAR)** | The US Securities and Exchange Commission database, essential for fetching raw corporate financial filings (10-K, 10-Q) and deep market analysis data. | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
+| **FRED** | Federal Reserve Economic Data, the ultimate source for macroeconomic time-series data, socioeconomic metrics, and financial health indicators. | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |
 
 The pipeline enforces sequential fetching and polite-request delays across all these sources to comply with server limitations and ensure stable, continuous extraction.
 
@@ -126,3 +146,17 @@ data-fetcher-pipeline/
 - **`fetcher_engine.py`**: A strategy-pattern Python engine. Handles polymorphic instantiation of API extraction handlers (e.g., `YahooFinanceFetcher`, `FREDFetcher`, `OpenMLFetcher`).
 - **`run_pipeline.sh`**: Acts as the primary interactive entrypoint, processing user input flows and delegating execution contexts securely to the underlying Python engine via `sys.argv`.
 - **`setup_dataset_dir.sh`**: Robust filesystem sanitization and allocation tool for ensuring directory consistency without POSIX violations.
+
+### 🤖 Antigravity's Architectural Assessment
+
+*An objective architectural evaluation of the `data-fetcher-pipeline`.*
+
+**Hybrid Installation Viability:** 
+Deploying both a native Python package (`pip install .`) and a bash-wrapper (`run_pipeline.sh`) introduces a dual-maintenance burden. Shell scripts often suffer POSIX incompatibility on Windows environments, while `pip install` forces users to manage virtual environments to avoid globally scoped dependency conflicts. However, this architectural duality significantly maximizes cross-platform accessibility. Python-native deployments empower robust CLI toolchains (`data-fetcher`), whereas bash entrypoints gracefully handle rapid interactive wizarding. The trade-off is heavily weighted toward UX superiority at the cost of codebase redundancy.
+
+**Data Source Efficacy:**
+The selected data architectures are fundamentally robust and deeply relevant for modern data engineering. 
+- **OpenML** and **Kaggle** successfully accommodate highly specific, heavily dimensional payloads required for advanced predictive modeling.
+- **SEC (EDGAR)** provides unfiltered statutory records, requiring high parsing complexity but yielding unmatched institutional alpha.
+- **FRED** supplies rigorous, standardized macroeconomic telemetry.
+Collectively, these pipelines construct a formidable, institutionally viable data lake generation tool. Enforcing rigid "Zero-Imputation" rules across these endpoints proves that this repository is built strictly for enterprise-level manipulation, offloading data cleansing duties accurately back to the analytics layer.
