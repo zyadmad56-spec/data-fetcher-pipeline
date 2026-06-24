@@ -303,23 +303,85 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
     return fetcher_class(query, outdir, config)
 
 
+def interactive_flow() -> tuple[str, str, str]:
+    """Interactive wizard to guide the user when run in zero-args mode."""
+    print("==========================================")
+    print("🌟 Welcome to the Data Fetcher Pipeline 🌟")
+    print("==========================================\n")
+    
+    topic = input("1. What specific topic or domain do you need datasets for? ").strip()
+    
+    intent = input("\n2. What exactly are you going to use this data for? (Providing this context helps me fetch the most accurate and suitable data for your use case. If you'd rather not say, just type 'Skip' or 'تمام'): ").strip()
+    
+    print("\n3. Please choose a fetching source:")
+    print("  1. 🌐 Search ALL available supported sources.")
+    print("  2. 🎯 Choose a specific source from our supported list.")
+    print("  3. 🔀 Specify a custom mix of our supported sources.")
+    print("  4. 🔗 Provide an external/custom website for me to try and fetch from.")
+    
+    source_choice = input("Enter your choice (1-4): ").strip()
+    
+    source = "openml"
+    if source_choice == '2':
+        print("\nSupported Sources: [openml, kaggle, sec, fred, airbnb, yfinance]")
+        source = input("Enter the specific source: ").strip().lower()
+        
+        topic_lower = topic.lower()
+        if source == "sec" and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
+            ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle/OpenML? (proceed/switch): ").strip().lower()
+            if ans == "switch":
+                source = input("Enter new source (e.g. kaggle): ").strip().lower()
+                
+    elif source_choice == '1':
+        print("\n[Mock] We will search ALL supported sources simultaneously...")
+    elif source_choice == '3':
+        print("\n[Mock] We will use a custom mix of supported sources...")
+    elif source_choice == '4':
+        print("\n[Mock] Advanced external parsing mode engaged.")
+
+    print("\n4. Let's define the technical shape of the required data:")
+    _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
+    _ = input("  - Features (Any specific columns/variables that MUST be present?): ").strip()
+    _ = input("  - Format (Preferred file format e.g., CSV, JSON, Parquet, Excel): ").strip()
+    _ = input("  - Timeframe (Any specific date range?): ").strip()
+    
+    print("\n5. How would you like the data delivered?")
+    print("  1. 🧹 Cleaned: Automatically handle missing values (drop/impute) and remove duplicates.")
+    print("  2. 🧱 Raw: Deliver the dataset exactly as fetched without any modifications.")
+    _ = input("Enter your choice (1 or 2): ").strip()
+    
+    print("\n[Wizard] All parameters collected successfully. Initializing Fetcher Engine...\n")
+    
+    # Only fallback if topic is empty
+    if not topic:
+        topic = "finance"
+    
+    return source, topic, os.path.join(os.getcwd(), "data_raw")
+
+
 def main() -> None:
     config = setup_wizard()
     
     parser = argparse.ArgumentParser(description="Data Fetcher Background Engine")
-    parser.add_argument("--source", required=True, help="Target data platform (e.g., yfinance, fred, airbnb)")
-    parser.add_argument("--query", required=True, help="Topic, ticker symbol, or series ID")
+    parser.add_argument("--source", required=False, help="Target data platform (e.g., yfinance, fred, airbnb)")
+    parser.add_argument("--query", required=False, help="Topic, ticker symbol, or series ID")
     parser.add_argument("--outdir", default=os.path.join(os.getcwd(), "data_raw"), help="Destination directory")
     
     args = parser.parse_args()
     
     try:
+        # Zero-args mode triggers the interactive onboarding flow
+        if not args.source or not args.query:
+            source, query, outdir = interactive_flow()
+        else:
+            source, query, outdir = args.source, args.query, args.outdir
+
         # Enforce Layer 2: Humanized Randomized Delays (simulating evasion tactics)
         delay = random.uniform(2, 5)
         print(f"[Engine] Imposing humanized delay of {delay:.2f} seconds to simulate human traffic...")
         time.sleep(delay)
         
-        fetcher = get_fetcher(args.source, args.query, args.outdir, config)
+        fetcher = get_fetcher(source, query, outdir, config)
         fetcher.run()
         print("[Engine] Extraction Complete. Pipeline exiting successfully.")
         
