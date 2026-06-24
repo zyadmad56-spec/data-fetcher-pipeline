@@ -22,17 +22,17 @@ The pipeline is architected to optimize developer velocity while maintaining str
 The pipeline dynamically provisions directory structures to prevent filesystem pollution. Data partitions are generated sequentially based on the target `source`, `format`, and `topic` schema.
 
 ```text
-📦 ~/Desktop/datasets_of_data-fetcher-pipeline/
- ┣ 📂 kaggle/
- ┃ ┗ 📂 CSV/
- ┃   ┗ 📂 retail_sales_data_2024/
- ┃     ┣ 📜 _raw.csv
- ┃     ┗ 📜 dataset_description.txt
- ┗ 📂 openml_org/
-   ┗ 📂 JSON/
-     ┗ 📂 healthcare_metrics/
-       ┣ 📜 _raw.json
-       ┗ 📜 dataset_description.txt
+~/Desktop/datasets_of_data-fetcher-pipeline/
+ ├── kaggle/
+ │ └── CSV/
+ │   └── retail_sales_data_2024/
+ │     ├── _raw.csv
+ │     └── dataset_description.txt
+ └── openml_org/
+   └── JSON/
+     └── healthcare_metrics/
+       ├── _raw.json
+       └── dataset_description.txt
 ```
 
 ## 3. Deep Technical Guide
@@ -114,14 +114,14 @@ docker run --env-file .env \
   your-docker-image-name
 ```
 
-### 🌐 Supported Data Sources
+### Supported Data Sources
 
 | Source | Description | Typical use case |
 | --- | --- | --- |
-| **OpenML** | An inclusive, open-source machine learning platform for dynamically searching and retrieving rich datasets and experiments. | **Data Scientists** and **ML Engineers** querying global index for top-ranked ML datasets. |
-| **Kaggle** | The premier platform for data science competitions and massive, diverse machine learning datasets. | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
-| **SEC (EDGAR)** | The US Securities and Exchange Commission database, essential for fetching raw corporate financial filings (10-K, 10-Q) and deep market analysis data. | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
-| **FRED** | Federal Reserve Economic Data, the ultimate source for macroeconomic time-series data, socioeconomic metrics, and financial health indicators. | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |
+| **OpenML** | An inclusive, open-source machine learning platform for dynamically searching and retrieving rich datasets and experiments. | Data Scientists and ML Engineers querying global index for top-ranked ML datasets. |
+| **Kaggle** | The premier platform for data science competitions and massive, diverse machine learning datasets. | Data Scientists and ML Engineers training machine learning models or testing predictive algorithms. |
+| **SEC (EDGAR)** | The US Securities and Exchange Commission database, essential for fetching raw corporate financial filings (10-K, 10-Q) and deep market analysis data. | Data Analysts and Business Analysts performing financial modeling or market analysis. |
+| **FRED** | Federal Reserve Economic Data, the ultimate source for macroeconomic time-series data, socioeconomic metrics, and financial health indicators. | Data Engineers building macro-level data warehouses and researchers running global analyses. |
 
 The pipeline enforces sequential fetching and polite-request delays across all these sources to comply with server limitations and ensure stable, continuous extraction.
 
@@ -134,6 +134,7 @@ data-fetcher-pipeline/
 ├── LICENSE
 ├── requirements.txt
 ├── .env.example
+├── config_template.json
 ├── data-fetcher-pipeline.skill
 ├── references/
 │   └── source-constraints.md
@@ -147,7 +148,7 @@ data-fetcher-pipeline/
 - **`run_pipeline.sh`**: Acts as the primary interactive entrypoint, processing user input flows and delegating execution contexts securely to the underlying Python engine via `sys.argv`.
 - **`setup_dataset_dir.sh`**: Robust filesystem sanitization and allocation tool for ensuring directory consistency without POSIX violations.
 
-### 🤖 Antigravity's Architectural Assessment
+### Antigravity's Architectural Assessment
 
 *An objective architectural evaluation of the `data-fetcher-pipeline`.*
 
