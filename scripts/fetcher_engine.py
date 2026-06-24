@@ -162,12 +162,74 @@ class GenericFetcher(BaseFetcher):
         raise NotImplementedError("This source logic is not yet implemented.")
 
 
+class OpenMLFetcher(BaseFetcher):
+    def __init__(self, query: str, outdir: str) -> None:
+        super().__init__(query, outdir)
+        self.target_dataset_id: int = -1
+        self.dataset_name: str = ""
+
+    def scout(self) -> None:
+        print(f"[Scout] Searching OpenML for query '{self.query}'...")
+        try:
+            import openml
+        except ImportError as exc:
+            raise ImportError("OpenML package is missing. Please run `pip install openml`.") from exc
+
+        try:
+            datasets_df: pd.DataFrame = openml.datasets.list_datasets(output_format="dataframe")
+        except Exception as exc:
+            raise RuntimeError(f"Failed to fetch dataset list from OpenML: {exc}") from exc
+            
+        mask = datasets_df['name'].str.contains(self.query, case=False, na=False)
+        matched_df: pd.DataFrame = datasets_df[mask]
+        
+        if matched_df.empty:
+            raise ValueError(f"No datasets found on OpenML matching query: '{self.query}'.")
+            
+        matched_sorted: pd.DataFrame = matched_df.sort_values(by="NumberOfInstances", ascending=False)
+        
+        top_dataset = matched_sorted.iloc[0]
+        self.target_dataset_id = int(top_dataset['did'])
+        self.dataset_name = str(top_dataset['name'])
+        
+        print(f"[Scout] Top dataset found: '{self.dataset_name}' (ID: {self.target_dataset_id})")
+
+    def extract(self) -> pd.DataFrame:
+        print(f"[Extract] Downloading dataset '{self.dataset_name}' from OpenML...")
+        try:
+            import openml
+        except ImportError as exc:
+            raise ImportError("OpenML package is missing. Please run `pip install openml`.") from exc
+
+        try:
+            dataset = openml.datasets.get_dataset(self.target_dataset_id, download_data=True)
+            X, y, _, _ = dataset.get_data(dataset_format="dataframe")
+        except Exception as exc:
+            raise RuntimeError(f"Failed to download OpenML dataset ID {self.target_dataset_id}: {exc}") from exc
+
+        if y is not None:
+            if isinstance(y, pd.Series):
+                X[y.name] = y
+            elif isinstance(y, pd.DataFrame):
+                X = pd.concat([X, y], axis=1)
+                
+        clean_topic: str = "".join(char for char in self.dataset_name if char.isalnum() or char in " _-").strip().replace(" ", "_").lower()
+        
+        base_dir: str = os.environ.get("OUTPUT_DIR", os.path.join(os.path.expanduser("~"), "Desktop"))
+        self.outdir = os.path.join(base_dir, "datasets_of_data-fetcher-pipeline", "openml_org", "CSV", clean_topic)
+        os.makedirs(self.outdir, exist_ok=True)
+        print(f"[Extract] Output directory set to: {self.outdir}")
+        
+        return X
+
+
 def get_fetcher(source: str, query: str, outdir: str) -> BaseFetcher:
     """Strategy Factory mapping CLI sources to OOP Classes."""
     fetchers = {
         "yfinance": YahooFinanceFetcher,
         "fred": FREDFetcher,
         "airbnb": AirbnbFetcher,
+        "openml": OpenMLFetcher,
     }
     fetcher_class = fetchers.get(source.lower(), GenericFetcher)
     return fetcher_class(query, outdir)

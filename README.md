@@ -44,6 +44,10 @@ Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL.
 Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 ```
 
+### ✨ New Feature: OpenML Intelligent Search
+
+The pipeline now features **OpenML integration** with a smart, interactive search mechanism! You can now easily search for diverse ML datasets (like "finance" or "healthcare") directly from the interactive `run_pipeline.sh` wizard, and the pipeline will dynamically find the top-ranked dataset, extract it, and cleanly apply our strict `CSV` formatting and sanitized topic-categorization auto-rules!
+
 ## Running with Docker
 
 When running the pipeline within a Docker container, the downloaded files will be written to an isolated filesystem unless you explicitly map a volume to your host machine.
@@ -63,10 +67,21 @@ docker run --env-file .env \
 The pipeline automatically sanitizes complex URLs and smartly organizes your downloads into a clean, auto-generated directory structure directly on your Desktop:
 `Desktop/datasets_of_data-fetcher-pipeline/{source}/{format}/{topic}`
 
+## Security & Permissions Transparency
+
+When installing this skill, automated security scanners (like Snyk or Socket) may flag the package with a "Medium Risk" alert. **This is an expected false-positive.**
+
+This skill is flagged because of its interactive onboarding script (`run_pipeline.sh`) and auto-organization logic which require:
+1. **Dynamic Environment Variable Handling:** The script interactively asks for and auto-populates your local `.env` file with API keys. 
+2. **Host File System Access:** It uses standard Unix commands (`mkdir -p`) to safely auto-generate organized folders directly on your host machine's Desktop.
+
+We are fully transparent about this: the code is strictly open-source, contains no trackers, and operates entirely locally without ever transmitting your keys anywhere other than the official data sources you explicitly request.
+
 ## Which pipeline to run
 
 | Source | Retrieves | Typical use case |
 | --- | --- | --- |
+| `OpenML` (NEW!) | Diverse machine learning datasets via intelligent search | **Data Scientists** quickly searching and downloading top-ranked ML datasets. |
 | `Kaggle` | Datasets and competition data | **Data Scientists** and **ML Engineers** training machine learning models or testing predictive algorithms. |
 | `SEC EDGAR` | Financial filings (10-K, 10-Q) and corporate data | **Data Analysts** and **Business Analysts** performing financial modeling or market analysis. |
 | `World Bank & WHO` | Socioeconomic and health metrics | **Data Engineers** building macro-level data warehouses and researchers running global analyses. |

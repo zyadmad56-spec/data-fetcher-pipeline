@@ -50,6 +50,17 @@ echo "✅ Environment configured securely."
 # 5. Hand off to the Python Engine
 # The Bash script gracefully passes these exported environment variables
 # to our Python script for handling complex API fetching and data processing.
-echo "🔄 Passing variables to Python Fetcher Engine..."
 
+echo ""
+read -p "Would you like to search OpenML for a dataset? (y/n) " use_openml
+if [[ "$use_openml" =~ ^[Yy]$ ]]; then
+    read -p "Enter your search query: " search_query
+    if [ -n "$search_query" ]; then
+        echo "🔄 Passing variables to Python Fetcher Engine for OpenML..."
+        python scripts/fetcher_engine.py --source openml --query "$search_query"
+        exit 0
+    fi
+fi
+
+echo "🔄 Passing variables to Python Fetcher Engine..."
 python scripts/fetcher_engine.py "$@"
