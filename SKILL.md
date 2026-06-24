@@ -1,27 +1,22 @@
 ---
 name: data-fetcher-pipeline
-description: The ultimate time-saving retrieval tool for fetching, downloading, and streaming pure raw datasets for Data Science, ML, and BI workflows. Features smart wizard setup, auto-organization, and data dictionaries!
+description: A professional-grade, architecture-driven retrieval pipeline for fetching, downloading, and streaming raw datasets across diverse APIs for Data Science, ML, and BI workflows.
 ---
 
-# 🚀 data-fetcher-pipeline
+# data-fetcher-pipeline
 
-Welcome to the smartest data-fetching pipeline for coding agents! We've automated the tedious tasks of data extraction and organization to give you back your most valuable asset: **time**.
+A highly modular data-fetching pipeline tailored for coding agents. It ensures rate-limit compliance, raw data integrity, and strict environment configuration across multiple backend architectures.
 
-## ✨ Core Value Propositions
+## 1. High-Level Architecture & Value Proposition
 
-- **The Ultimate Time Saver:** Say goodbye to endless clicking and manual downloading. Just ask for what you need!
-- **Format Flexibility & Conversion:** Works seamlessly with your preferred data formats and natively handles necessary format conversions!
-- **Purity of Data:** Your data arrives 100% RAW. No hidden cleaning, no unapproved imputations. Total data integrity.
-- **Automated Data Dictionaries:** Every dataset comes beautifully paired with an auto-generated metadata file (`dataset_description.txt`) detailing the columns, null densities, and dimensions!
-- **Smart Desktop Organization:** It brilliantly manages your workspace to keep your Desktop incredibly clean and structured.
+- **Zero-Imputation Data Purity:** Extracts data payloads accurately and completely, without enforcing unauthorized data manipulation. Preserves exact state and dimensions.
+- **Automated Data Dictionaries:** Generates robust `dataset_description.txt` metadata dictionaries profiling schema structure and null densities.
+- **Secure Configuration (Lazy-Loaded State):** Enforces strict OS-standard credential management (`~/.config/data-fetcher-pipeline/config.json`), resolving previous shell-injection/SAST vulnerabilities and prompting for API credentials only at execution time.
+- **Operational Efficiency:** Reduces boilerplate API extraction logic, accelerating machine learning CI/CD pipelines.
 
-## 🛠️ The All-in-One Guided Wizard
+## 2. Workspace Visualization & File Management
 
-Simply run the pipeline. If you haven't set up your API keys, our friendly, interactive wizard will securely guide you through configuring them in an OS-standard JSON file (`~/.config/data-fetcher-pipeline/config.json`). You can set them all up immediately or rely on our clever **Lazy Loading** to only ask for what you need, exactly when you need it!
-
-## 📂 Desktop Structure Magic
-
-This is how elegantly we organize your data natively on your Desktop:
+Enforces a rigid output schema directly on your workstation to maintain strict filesystem health:
 
 ```text
 📦 ~/Desktop/datasets_of_data-fetcher-pipeline/
@@ -37,10 +32,24 @@ This is how elegantly we organize your data natively on your Desktop:
        ┗ 📜 dataset_description.txt
 ```
 
-## 🗣️ How to Use
+## 3. Deep Technical Guide
 
-Trigger the pipeline with simple conversational commands:
+### Setup Instructions
+
+If executing within a legacy or automated container environment, manually map the credentials:
+```bash
+export KAGGLE_USERNAME="your_username"
+export KAGGLE_KEY="your_api_key"
+export SEC_API_KEY="your_sec_key"
+```
+For standard CLI executions, allow the `fetcher_engine.py` interactive Setup Wizard to construct your secure JSON configuration file.
+
+### Execution Protocol
+
+Pass natural language instructions to your automated agent, specifying the target endpoint:
 
 - "Use the data-fetcher-pipeline to get the latest COVID-19 dataset from WHO."
 - "Use the data-fetcher-pipeline to download the SEC EDGAR 10-K filings for AAPL."
 - "Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline."
+
+The pipeline enforces execution serialization and implements algorithmic delays to bypass automated rate-limiting algorithms.
