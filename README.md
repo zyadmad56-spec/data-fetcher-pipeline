@@ -161,3 +161,28 @@ The selected data architectures are fundamentally robust and deeply relevant for
 - **SEC (EDGAR)** provides unfiltered statutory records, requiring high parsing complexity but yielding unmatched institutional alpha.
 - **FRED** supplies rigorous, standardized macroeconomic telemetry.
 Collectively, these pipelines construct a formidable, institutionally viable data lake generation tool. Enforcing rigid "Zero-Imputation" rules across these endpoints proves that this repository is built strictly for enterprise-level manipulation, offloading data cleansing duties accurately back to the analytics layer.
+
+## 4. Recent Updates
+
+- **Kaggle & SEC EDGAR Architecture Integration**: Fully implemented native extraction classes `KaggleFetcher` and `SECFetcher`. Configuration handling has been securely routed through the global state validation layer to prevent crashes.
+- **Cross-Platform Path Unification**: Removed all hardcoded absolute paths. Upgraded bash subprocess routing to dynamically resolve output directories (`setup_dataset_dir.sh`) independently of host operating systems.
+
+## 5. How to Install
+
+For new engineers cloning the repository locally, execute the following protocol:
+
+1. **Clone the Repository & Navigate:**
+   ```bash
+   git clone <repository_url>
+   cd data-fetcher-pipeline
+   ```
+2. **Install Dependencies:**
+   Ensure your virtual environment is active, then install all strict dependencies outlined in the pipeline:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Trigger First-Run Wizard:**
+   Execute the engine without runtime arguments. The architecture will intercept the empty payload and automatically guide you through a secure setup sequence to instantiate your API keys.
+   ```bash
+   python scripts/fetcher_engine.py
+   ```

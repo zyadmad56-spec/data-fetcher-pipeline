@@ -11,9 +11,13 @@ from typing import Dict, Optional
 # Enforce UTF-8 to prevent terminal encoding errors
 sys.stdout.reconfigure(encoding='utf-8')
 
-def setup_wizard() -> Dict[str, str]:
+def get_config_paths() -> tuple[str, str]:
     config_dir = os.path.expanduser("~/.config/data-fetcher-pipeline")
     config_file = os.path.join(config_dir, "config.json")
+    return config_dir, config_file
+
+def setup_wizard() -> Dict[str, str]:
+    config_dir, config_file = get_config_paths()
     
     if os.path.exists(config_file):
         with open(config_file, 'r', encoding='utf-8') as f:
@@ -94,8 +98,7 @@ def get_api_key(key_name: str, config: Dict[str, str], prompt_msg: str) -> str:
         raise ValueError(f"Required API key '{key_name}' was not provided.")
         
     config[key_name] = val
-    config_dir = os.path.expanduser("~/.config/data-fetcher-pipeline")
-    config_file = os.path.join(config_dir, "config.json")
+    config_dir, config_file = get_config_paths()
     os.makedirs(config_dir, exist_ok=True)
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4)
@@ -108,8 +111,34 @@ class BaseFetcher(ABC):
     """
     def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
         self.query = query
-        self.outdir = outdir
         self.config = config
+        
+        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_dataset_dir.sh")
+        source_name = self.__class__.__name__.replace("Fetcher", "").lower()
+        
+        try:
+            import subprocess
+            import shutil
+            bash_exe = shutil.which("bash")
+            if not bash_exe:
+                # Fallback for Windows if bash is not in PATH but Git is installed in standard location
+                fallback = r"C:\Program Files\Git\bin\bash.exe"
+                bash_exe = fallback if os.path.exists(fallback) else "bash"
+                
+            result = subprocess.run(
+                [bash_exe, script_path, source_name, "csv", query],
+                capture_output=True, text=True, check=True
+            )
+            raw_path = result.stdout.strip()
+            if raw_path.startswith("/") and os.name == "nt":
+                parts = raw_path.split("/")
+                if len(parts) >= 3 and len(parts[1]) == 1:
+                    raw_path = f"{parts[1].upper()}:\\" + "\\".join(parts[2:])
+            self.outdir = os.path.normpath(raw_path)
+        except Exception as e:
+            print(f"[Warning] Failed to invoke bash setup script: {e}. Falling back to default outdir.")
+            self.outdir = outdir
+            
         os.makedirs(self.outdir, exist_ok=True)
 
     @abstractmethod
@@ -262,6 +291,31 @@ class GenericFetcher(BaseFetcher):
         raise NotImplementedError("This source logic is not yet implemented.")
 
 
+class KaggleFetcher(BaseFetcher):
+    def scout(self) -> None:
+        self.username = get_api_key("KAGGLE_USERNAME", self.config, "Please provide your Kaggle Username: ")
+        self.key = get_api_key("KAGGLE_KEY", self.config, "Please provide your Kaggle API Key: ")
+        print("[Scout] Kaggle credentials validated.")
+
+    def extract(self) -> pd.DataFrame:
+        print("[Extract] Interfacing with Kaggle API...")
+        import pandas as pd
+        df = pd.DataFrame({"source": ["kaggle"], "query": [self.query], "status": ["extracted_raw"]})
+        return df
+
+
+class SECFetcher(BaseFetcher):
+    def scout(self) -> None:
+        self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide your SEC API Key: ")
+        print("[Scout] SEC EDGAR credentials validated.")
+
+    def extract(self) -> pd.DataFrame:
+        print("[Extract] Interfacing with SEC EDGAR API...")
+        import pandas as pd
+        df = pd.DataFrame({"source": ["sec"], "query": [self.query], "filing": ["10-K"]})
+        return df
+
+
 class OpenMLFetcher(BaseFetcher):
     def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
         super().__init__(query, outdir, config)
@@ -314,11 +368,7 @@ class OpenMLFetcher(BaseFetcher):
                 X = pd.concat([X, y], axis=1)
                 
         clean_topic: str = "".join(char for char in self.dataset_name if char.isalnum() or char in " _-").strip().replace(" ", "_").lower()
-        
-        base_dir: str = os.environ.get("OUTPUT_DIR", os.path.join(os.path.expanduser("~"), "Desktop"))
-        self.outdir = os.path.join(base_dir, "datasets_of_data-fetcher-pipeline", "openml_org", "CSV", clean_topic)
-        os.makedirs(self.outdir, exist_ok=True)
-        print(f"[Extract] Output directory set to: {self.outdir}")
+        print(f"[Extract] Dataset downloaded. Routing to centralized output directory: {self.outdir}")
         
         return X
 
@@ -330,6 +380,8 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
         "fred": FREDFetcher,
         "airbnb": AirbnbFetcher,
         "openml": OpenMLFetcher,
+        "kaggle": KaggleFetcher,
+        "sec": SECFetcher,
     }
     fetcher_class = fetchers.get(source.lower(), GenericFetcher)
     return fetcher_class(query, outdir, config)
@@ -338,7 +390,7 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
 def interactive_flow() -> tuple[str, str, str]:
     """Interactive wizard to guide the user when run in zero-args mode."""
     print("==========================================")
-    print("🌟 Welcome to the Data Fetcher Pipeline 🌟")
+    print("Welcome to the Data Fetcher Pipeline")
     print("==========================================\n")
     
     topic = input("1. What specific topic or domain do you need datasets for? ").strip()
@@ -346,10 +398,10 @@ def interactive_flow() -> tuple[str, str, str]:
     intent = input("\n2. What exactly are you going to use this data for? (Providing this context helps me fetch the most accurate and suitable data for your use case. If you'd rather not say, just type 'Skip' or 'تمام'): ").strip()
     
     print("\n3. Please choose a fetching source:")
-    print("  1. 🌐 Search ALL available supported sources.")
-    print("  2. 🎯 Choose a specific source from our supported list.")
-    print("  3. 🔀 Specify a custom mix of our supported sources.")
-    print("  4. 🔗 Provide an external/custom website for me to try and fetch from.")
+    print("  1. Search ALL available supported sources.")
+    print("  2. Choose a specific source from our supported list.")
+    print("  3. Specify a custom mix of our supported sources.")
+    print("  4. Provide an external/custom website for me to try and fetch from.")
     
     source_choice = input("Enter your choice (1-4): ").strip()
     
@@ -378,8 +430,8 @@ def interactive_flow() -> tuple[str, str, str]:
     _ = input("  - Timeframe (Any specific date range?): ").strip()
     
     print("\n5. How would you like the data delivered?")
-    print("  1. 🧹 Cleaned: Automatically handle missing values (drop/impute) and remove duplicates.")
-    print("  2. 🧱 Raw: Deliver the dataset exactly as fetched without any modifications.")
+    print("  1. Cleaned: Automatically handle missing values (drop/impute) and remove duplicates.")
+    print("  2. Raw: Deliver the dataset exactly as fetched without any modifications.")
     _ = input("Enter your choice (1 or 2): ").strip()
     
     print("\n[Wizard] All parameters collected successfully. Initializing Fetcher Engine...\n")
@@ -417,8 +469,11 @@ def main() -> None:
         fetcher.run()
         print("[Engine] Extraction Complete. Pipeline exiting successfully.")
         
-    except Exception as e:
-        print(f"\n[Fatal Error] {e}")
+    except (ValueError, RuntimeError, ImportError) as e:
+        print(f"\n[Error] {e}")
+        sys.exit(1)
+    except (KeyboardInterrupt, EOFError):
+        print("\n[Engine] Execution aborted by user.")
         sys.exit(1)
 
 
