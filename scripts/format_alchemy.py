@@ -32,14 +32,14 @@ class FormatAlchemyEngine:
         try:
             with sqlite3.connect(self.db_filepath) as conn:
                 cursor = conn.cursor()
-                cursor.execute(f"SELECT COUNT(*) FROM {self.dataset_name}")
+                cursor.execute(f'SELECT COUNT(*) FROM "{self.dataset_name}"')
                 row_count = cursor.fetchone()[0]
                 
                 if row_count > 1048575:
                     print(f"[Warning] Dataset has {row_count} rows, which exceeds Excel's limit. Exporting only the first 1,048,575 rows.")
-                    df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name} LIMIT 1048575", conn)
+                    df = pd.read_sql_query(f'SELECT * FROM "{self.dataset_name}" LIMIT 1048575', conn)
                 else:
-                    df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name}", conn)
+                    df = pd.read_sql_query(f'SELECT * FROM "{self.dataset_name}"', conn)
         except sqlite3.Error as e:
             raise RuntimeError(f"Database query failed: {e}") from e
             

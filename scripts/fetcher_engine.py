@@ -119,7 +119,8 @@ class BaseFetcher(ABC):
         # Native Python Directory Provisioning
         import re
         
-        base_dir = os.environ.get("OUTPUT_DIR", os.path.expanduser("~/Desktop"))
+        # Use the explicitly passed outdir parameter instead of hardcoding Desktop
+        base_dir = outdir
         
         # Sanitize Source
         clean_source = re.sub(r'^https?://', '', source_name, flags=re.IGNORECASE)
@@ -322,7 +323,7 @@ class KaggleFetcher(BaseFetcher):
             except Exception as e:
                 raise RuntimeError(f"Kaggle download failed: {e}") from e
                 
-            csv_files = glob.glob(os.path.join(tmpdir, "*.csv"))
+            csv_files = glob.glob(os.path.join(tmpdir, "**", "*.csv"), recursive=True)
             if not csv_files:
                 raise ValueError("No CSV files found in the Kaggle dataset.")
                 
@@ -486,20 +487,31 @@ def interactive_flow() -> tuple[str, str, str]:
     source_choice = input("Enter your choice (1-3): ").strip()
     
     source = "openml"
+    valid_sources = ["openml", "kaggle", "sec", "fred", "airbnb", "yfinance"]
+    
     if source_choice == '1':
-        print("\nSupported Sources: [openml, kaggle, sec, fred, airbnb, yfinance]")
+        print(f"\nSupported Sources: {valid_sources}")
         source = input("Enter the specific source: ").strip().lower()
+        while source not in valid_sources:
+            print(f"[Error] '{source}' is not a supported source.")
+            source = input(f"Please choose from {valid_sources}: ").strip().lower()
         
         topic_lower = topic.lower()
         if source == "sec" and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
             ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle/OpenML? (proceed/switch): ").strip().lower()
             if ans == "switch":
                 source = input("Enter new source (e.g. kaggle): ").strip().lower()
+                while source not in valid_sources:
+                    print(f"[Error] '{source}' is not a supported source.")
+                    source = input(f"Please choose from {valid_sources}: ").strip().lower()
     else:
         print(f"\n[Notice] Advanced routing (Choices {source_choice}) is currently in development.")
         print("Falling back to standard source selection.")
-        print("\nSupported Sources: [openml, kaggle, sec, fred, airbnb, yfinance]")
+        print(f"\nSupported Sources: {valid_sources}")
         source = input("Enter the specific source: ").strip().lower()
+        while source not in valid_sources:
+            print(f"[Error] '{source}' is not a supported source.")
+            source = input(f"Please choose from {valid_sources}: ").strip().lower()
 
     print("\n4. Let's define the technical shape of the required data:")
     _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
