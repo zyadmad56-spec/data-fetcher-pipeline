@@ -113,36 +113,37 @@ class BaseFetcher(ABC):
         self.query = query
         self.config = config
         
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup_dataset_dir.sh")
         source_name = self.__class__.__name__.replace("Fetcher", "").lower()
+        format_name = "csv"
         
-        try:
-            import subprocess
-            import shutil
-            bash_exe = shutil.which("bash")
-            if not bash_exe:
-                # Fallback for Windows if bash is not in PATH but Git is installed in standard location
-                fallback = r"C:\Program Files\Git\bin\bash.exe"
-                bash_exe = fallback if os.path.exists(fallback) else "bash"
-                
-            result = subprocess.run(
-                [bash_exe, script_path, source_name, "csv", query],
-                capture_output=True, text=True, check=True
-            )
-            raw_path = result.stdout.strip()
-            if raw_path.startswith("/") and os.name == "nt":
-                parts = raw_path.split("/")
-                if len(parts) >= 3 and len(parts[1]) == 1:
-                    raw_path = f"{parts[1].upper()}:\\" + "\\".join(parts[2:])
-            self.outdir = os.path.normpath(raw_path)
-        except Exception as e:
-            print(f"[Warning] Failed to invoke bash setup script: {e}. Falling back to default outdir.")
-            self.outdir = outdir
-            
+        # Native Python Directory Provisioning
+        import re
+        
+        base_dir = os.environ.get("OUTPUT_DIR", os.path.expanduser("~/Desktop"))
+        
+        # Sanitize Source
+        clean_source = re.sub(r'^https?://', '', source_name, flags=re.IGNORECASE)
+        clean_source = re.sub(r'^www\.', '', clean_source, flags=re.IGNORECASE)
+        clean_source = clean_source.split('/')[0]
+        clean_source = re.sub(r'[<>:"/\|?* ]+', '_', clean_source).lower()
+        
+        # Sanitize Format and Topic
+        clean_format = format_name.upper()
+        clean_topic = re.sub(r'[^a-zA-Z0-9_-]+', '_', self.query).lower()
+        
+        # Construct and Create
+        self.outdir = os.path.normpath(os.path.join(
+            base_dir, 
+            "datasets_of_data-fetcher-pipeline", 
+            clean_source, 
+            clean_format, 
+            clean_topic
+        ))
+        
         os.makedirs(self.outdir, exist_ok=True)
 
     @abstractmethod
-    def scout(self):
+    def scout(self) -> None:
         """Phase 1 (Scouting): Pre-flight validation, ticker checks, and schema validation."""
         pass
 
@@ -151,7 +152,7 @@ class BaseFetcher(ABC):
         """Phase 2 (Extraction): Download and format raw payloads."""
         pass
 
-    def validate_payload(self, df: pd.DataFrame):
+    def validate_payload(self, df: pd.DataFrame) -> None:
         """Universal Payload Validator (Null-Density Check)"""
         if df.empty:
             raise ValueError("Graceful Fallback Triggered: Dataframe is completely empty.")
@@ -194,7 +195,7 @@ class BaseFetcher(ABC):
 
 
 class YahooFinanceFetcher(BaseFetcher):
-    def scout(self):
+    def scout(self) -> None:
         print(f"[Scout] Validating Yahoo Finance Ticker '{self.query}'...")
         import yfinance as yf
         ticker = yf.Ticker(self.query)
@@ -241,7 +242,7 @@ class FREDFetcher(BaseFetcher):
 
 
 class AirbnbFetcher(BaseFetcher):
-    def scout(self):
+    def scout(self) -> None:
         print(f"[Scout] Initiating HTML Scouting & Progressive Resiliency Protocol for '{self.query}'...")
         import requests
         from bs4 import BeautifulSoup
@@ -285,7 +286,7 @@ class AirbnbFetcher(BaseFetcher):
 
 
 class GenericFetcher(BaseFetcher):
-    def scout(self):
+    def scout(self) -> None:
         print(f"[Scout] Running generic pre-flight validation for '{self.query}'...")
 
     def extract(self) -> pd.DataFrame:
@@ -301,20 +302,98 @@ class KaggleFetcher(BaseFetcher):
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with Kaggle API...")
-        import pandas as pd
-        df = pd.DataFrame({"source": ["kaggle"], "query": [self.query], "status": ["extracted_raw"]})
+        import os
+        import tempfile
+        import glob
+        
+        os.environ['KAGGLE_USERNAME'] = self.username
+        os.environ['KAGGLE_KEY'] = self.key
+        
+        try:
+            import kaggle
+            kaggle.api.authenticate()
+        except ImportError as exc:
+            raise ImportError("Kaggle package is missing. Please run `pip install kaggle`.") from exc
+            
+        with tempfile.TemporaryDirectory() as tmpdir:
+            print(f"[Extract] Downloading dataset '{self.query}'...")
+            try:
+                kaggle.api.dataset_download_files(self.query, path=tmpdir, unzip=True)
+            except Exception as e:
+                raise RuntimeError(f"Kaggle download failed: {e}") from e
+                
+            csv_files = glob.glob(os.path.join(tmpdir, "*.csv"))
+            if not csv_files:
+                raise ValueError("No CSV files found in the Kaggle dataset.")
+                
+            print(f"[Extract] Found {len(csv_files)} CSV file(s). Reading the primary payload...")
+            # For simplicity, load the largest CSV file
+            largest_csv = max(csv_files, key=os.path.getsize)
+            df = pd.read_csv(largest_csv, low_memory=False)
+            
         return df
 
 
 class SECFetcher(BaseFetcher):
     def scout(self) -> None:
-        self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide your SEC API Key: ")
+        self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide your SEC API Key or Email for User-Agent: ")
         print("[Scout] SEC EDGAR credentials validated.")
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with SEC EDGAR API...")
-        import pandas as pd
-        df = pd.DataFrame({"source": ["sec"], "query": [self.query], "filing": ["10-K"]})
+        import requests
+        
+        # SEC requires a user-agent in the format "Sample Company Name AdminContact@<sample company domain>.com"
+        # We will use the provided api_key/email as the user agent
+        ua = self.api_key if "@" in self.api_key else f"data-fetcher-pipeline/1.0 ({self.api_key})"
+        headers = {"User-Agent": ua}
+        
+        # Step 1: Resolve Ticker to CIK
+        cik_url = "https://www.sec.gov/files/company_tickers.json"
+        resp = requests.get(cik_url, headers=headers)
+        if resp.status_code != 200:
+            raise ValueError(f"Failed to fetch SEC CIK index. Status: {resp.status_code}")
+            
+        tickers = resp.json()
+        cik_str = None
+        for k, v in tickers.items():
+            if str(v.get('ticker', '')).lower() == self.query.lower():
+                cik_str = str(v['cik_str']).zfill(10)
+                break
+                
+        if not cik_str:
+            raise ValueError(f"Ticker '{self.query}' not found in SEC database.")
+            
+        print(f"[Extract] Resolved ticker '{self.query}' to CIK {cik_str}. Fetching company facts...")
+        
+        # Step 2: Fetch company facts
+        facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_str}.json"
+        resp = requests.get(facts_url, headers=headers)
+        if resp.status_code != 200:
+            raise ValueError(f"Failed to fetch facts for CIK {cik_str}. Status: {resp.status_code}")
+            
+        data = resp.json()
+        rows = []
+        for taxonomy, concepts in data.get("facts", {}).items():
+            for concept_name, concept_data in concepts.items():
+                for unit, observations in concept_data.get("units", {}).items():
+                    for obs in observations:
+                        rows.append({
+                            "taxonomy": taxonomy,
+                            "concept": concept_name,
+                            "unit": unit,
+                            "val": obs.get("val"),
+                            "fy": obs.get("fy"),
+                            "fp": obs.get("fp"),
+                            "form": obs.get("form"),
+                            "filed": obs.get("filed"),
+                            "end": obs.get("end")
+                        })
+                        
+        if not rows:
+            raise ValueError("No financial facts found for this company.")
+            
+        df = pd.DataFrame(rows)
         return df
 
 

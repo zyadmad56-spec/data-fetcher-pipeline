@@ -59,13 +59,11 @@ data-fetcher-pipeline/
 ├── requirements.txt
 ├── .env.example
 ├── config_template.json
-├── data-fetcher-pipeline.skill
 ├── references/
 │   └── source-constraints.md
 └── scripts/
     ├── fetcher_engine.py
-    ├── run_pipeline.sh
-    └── setup_dataset_dir.sh
+    └── run_pipeline.sh
 ```
 
 For a comprehensive evaluation of the architecture, refer to the assessment section inside `README.md`.

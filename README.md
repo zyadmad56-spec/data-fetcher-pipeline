@@ -140,13 +140,10 @@ data-fetcher-pipeline/
 │   └── source-constraints.md
 └── scripts/
     ├── fetcher_engine.py
-    ├── run_pipeline.sh
-    └── setup_dataset_dir.sh
-```
+    └── run_pipeline.sh
 
-- **`fetcher_engine.py`**: A strategy-pattern Python engine. Handles polymorphic instantiation of API extraction handlers (e.g., `YahooFinanceFetcher`, `FREDFetcher`, `OpenMLFetcher`).
+- **`fetcher_engine.py`**: A strategy-pattern Python engine. Handles polymorphic instantiation of API extraction handlers (e.g., `YahooFinanceFetcher`, `FREDFetcher`, `OpenMLFetcher`). Features native, OS-independent directory provisioning without shell dependencies.
 - **`run_pipeline.sh`**: Acts as the primary interactive entrypoint, processing user input flows and delegating execution contexts securely to the underlying Python engine via `sys.argv`.
-- **`setup_dataset_dir.sh`**: Robust filesystem sanitization and allocation tool for ensuring directory consistency without POSIX violations.
 
 ### Antigravity's Architectural Assessment
 
@@ -165,7 +162,7 @@ Collectively, these pipelines construct a formidable, institutionally viable dat
 ## 4. Recent Updates
 
 - **Kaggle & SEC EDGAR Architecture Integration**: Fully implemented native extraction classes `KaggleFetcher` and `SECFetcher`. Configuration handling has been securely routed through the global state validation layer to prevent crashes.
-- **Cross-Platform Path Unification**: Removed all hardcoded absolute paths. Upgraded bash subprocess routing to dynamically resolve output directories (`setup_dataset_dir.sh`) independently of host operating systems.
+- **Cross-Platform Path Unification**: Removed all hardcoded absolute paths and shell dependencies. Directory provisioning is now 100% native Python, ensuring absolute compatibility across Windows, macOS, and Linux without fragile POSIX shell fallbacks.
 - **Format Alchemy ETL Module**: Deployed an isolated post-processing transformation engine (`scripts/format_alchemy.py`). Upon successful raw extraction, the pipeline prompts the user (`y/n`) to automatically infer datatypes and convert the raw CSV payload into a local SQLite database and an auto-formatted Excel workbook without violating the core "Pure Fetcher Philosophy".
 
 ## 5. How to Install

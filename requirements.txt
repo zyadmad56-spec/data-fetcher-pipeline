@@ -4,3 +4,4 @@ requests>=2.0.0
 beautifulsoup4>=4.0.0
 openml>=0.12.2
 openpyxl>=3.0.0
+kaggle>=1.5.0

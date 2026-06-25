@@ -15,13 +15,14 @@ class FormatAlchemyEngine:
 
     def csv_to_sqlite(self) -> None:
         try:
-            df = pd.read_csv(self.csv_filepath)
+            with sqlite3.connect(self.db_filepath) as conn:
+                chunksize = 100000
+                first_chunk = True
+                for chunk in pd.read_csv(self.csv_filepath, chunksize=chunksize, low_memory=False):
+                    chunk.to_sql(self.dataset_name, conn, if_exists="replace" if first_chunk else "append", index=False)
+                    first_chunk = False
         except pd.errors.EmptyDataError as e:
             raise ValueError(f"CSV file is empty or corrupted: {e}") from e
-            
-        try:
-            with sqlite3.connect(self.db_filepath) as conn:
-                df.to_sql(self.dataset_name, conn, if_exists="replace", index=False)
         except sqlite3.Error as e:
             raise RuntimeError(f"Database ingestion failed: {e}") from e
             
@@ -30,7 +31,15 @@ class FormatAlchemyEngine:
     def sqlite_to_excel(self) -> None:
         try:
             with sqlite3.connect(self.db_filepath) as conn:
-                df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name}", conn)
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT COUNT(*) FROM {self.dataset_name}")
+                row_count = cursor.fetchone()[0]
+                
+                if row_count > 1048575:
+                    print(f"[Warning] Dataset has {row_count} rows, which exceeds Excel's limit. Exporting only the first 1,048,575 rows.")
+                    df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name} LIMIT 1048575", conn)
+                else:
+                    df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name}", conn)
         except sqlite3.Error as e:
             raise RuntimeError(f"Database query failed: {e}") from e
             
