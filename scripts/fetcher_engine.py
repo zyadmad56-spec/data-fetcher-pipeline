@@ -144,14 +144,33 @@ class BaseFetcher(ABC):
         os.makedirs(self.outdir, exist_ok=True)
 
     @abstractmethod
-    def scout(self) -> None:
-        """Phase 1 (Scouting): Pre-flight validation, ticker checks, and schema validation."""
+    def scout(self) -> dict:
+        """Phase 1 (Scouting): Pre-flight validation. Returns metadata dict: {'url': str, 'size_info': str}"""
         pass
 
     @abstractmethod
     def extract(self) -> pd.DataFrame:
         """Phase 2 (Extraction): Download and format raw payloads."""
         pass
+
+    def pre_flight_authorization(self, metadata: dict) -> int:
+        print("\n" + "="*50)
+        print(" PRE-FLIGHT AUTHORIZATION REQUIRED")
+        print("="*50)
+        print(f"Target URL : {metadata.get('url', 'Unknown')}")
+        print(f"Data Size  : {metadata.get('size_info', 'Unknown (Determined at runtime)')}")
+        print("-" * 50)
+        
+        while True:
+            ans = input("Do you want to extract this entire dataset? (y/n) or type a number to extract a specific number of rows: ").strip().lower()
+            if ans in ['y', 'yes']:
+                return 0 # 0 means all
+            elif ans in ['n', 'no']:
+                raise ValueError("Extraction aborted by user during Pre-Flight Authorization.")
+            elif ans.isdigit():
+                return int(ans)
+            else:
+                print("[Error] Invalid input. Please type 'y', 'n', or a number.")
 
     def validate_payload(self, df: pd.DataFrame) -> None:
         """Universal Payload Validator (Null-Density Check)"""
@@ -185,8 +204,19 @@ class BaseFetcher(ABC):
     def run(self) -> str:
         """Execution Flow Controller"""
         print(f"[{self.__class__.__name__}] Initiating extraction sequence for query: '{self.query}'")
-        self.scout()
+        metadata = self.scout()
+        
+        if metadata:
+            self.row_limit = self.pre_flight_authorization(metadata)
+        else:
+            self.row_limit = 0
+            
         df = self.extract()
+        
+        if self.row_limit > 0 and len(df) > self.row_limit:
+            print(f"[Engine] Slicing dataset to requested {self.row_limit} rows...")
+            df = df.head(self.row_limit)
+            
         self.validate_payload(df)
         
         safe_filename = "".join(x for x in self.query if x.isalnum() or x in " _-").strip().replace(" ", "_").lower()
@@ -196,7 +226,7 @@ class BaseFetcher(ABC):
 
 
 class YahooFinanceFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         print(f"[Scout] Validating Yahoo Finance Ticker '{self.query}'...")
         import yfinance as yf
         ticker = yf.Ticker(self.query)
@@ -204,6 +234,10 @@ class YahooFinanceFetcher(BaseFetcher):
         if hist.empty:
             raise ValueError(f"Ticker '{self.query}' not found or delisted.")
         print("[Scout] Ticker validated and active.")
+        return {
+            "url": f"https://finance.yahoo.com/quote/{self.query}",
+            "size_info": "Max Historical Daily Candles"
+        }
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Fetching historical market data...")
@@ -215,13 +249,17 @@ class YahooFinanceFetcher(BaseFetcher):
 
 
 class FREDFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         self.api_key = get_api_key(
             "FRED_API_KEY", 
             self.config, 
             "Please go to https://fred.stlouisfed.org/docs/api/api_key.html and paste your FRED API Key: "
         )
         print("[Scout] Credentials validated.")
+        return {
+            "url": f"https://fred.stlouisfed.org/series/{self.query}",
+            "size_info": "Full Time-Series History"
+        }
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with FRED API...")
@@ -243,7 +281,7 @@ class FREDFetcher(BaseFetcher):
 
 
 class AirbnbFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         print(f"[Scout] Initiating HTML Scouting & Progressive Resiliency Protocol for '{self.query}'...")
         import requests
         from bs4 import BeautifulSoup
@@ -269,6 +307,10 @@ class AirbnbFetcher(BaseFetcher):
             raise ValueError(f"Could not resolve static .csv.gz download link for city: '{self.query}'.")
             
         print(f"[Scout] Static download target resolved: {self.download_url}")
+        return {
+            "url": self.download_url,
+            "size_info": "Unknown compressed CSV payload"
+        }
 
     def extract(self) -> pd.DataFrame:
         import pandas as pd
@@ -287,8 +329,9 @@ class AirbnbFetcher(BaseFetcher):
 
 
 class GenericFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         print(f"[Scout] Running generic pre-flight validation for '{self.query}'...")
+        return {}
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Fetching tabular data...")
@@ -296,10 +339,14 @@ class GenericFetcher(BaseFetcher):
 
 
 class KaggleFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         self.username = get_api_key("KAGGLE_USERNAME", self.config, "Please provide your Kaggle Username: ")
         self.key = get_api_key("KAGGLE_KEY", self.config, "Please provide your Kaggle API Key: ")
         print("[Scout] Kaggle credentials validated.")
+        return {
+            "url": f"https://www.kaggle.com/datasets/{self.query}",
+            "size_info": "Unknown CSV payload (Full dataset archive)"
+        }
 
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with Kaggle API...")
@@ -336,42 +383,48 @@ class KaggleFetcher(BaseFetcher):
 
 
 class SECFetcher(BaseFetcher):
-    def scout(self) -> None:
+    def scout(self) -> dict:
         self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide your SEC API Key or Email for User-Agent: ")
         print("[Scout] SEC EDGAR credentials validated.")
-
-    def extract(self) -> pd.DataFrame:
-        print("[Extract] Interfacing with SEC EDGAR API...")
         import requests
         
-        # SEC requires a user-agent in the format "Sample Company Name AdminContact@<sample company domain>.com"
-        # We will use the provided api_key/email as the user agent
         ua = self.api_key if "@" in self.api_key else f"data-fetcher-pipeline/1.0 ({self.api_key})"
         headers = {"User-Agent": ua}
         
-        # Step 1: Resolve Ticker to CIK
         cik_url = "https://www.sec.gov/files/company_tickers.json"
         resp = requests.get(cik_url, headers=headers)
         if resp.status_code != 200:
             raise ValueError(f"Failed to fetch SEC CIK index. Status: {resp.status_code}")
             
         tickers = resp.json()
-        cik_str = None
+        self.cik_str = None
         for k, v in tickers.items():
             if str(v.get('ticker', '')).lower() == self.query.lower():
-                cik_str = str(v['cik_str']).zfill(10)
+                self.cik_str = str(v['cik_str']).zfill(10)
                 break
                 
-        if not cik_str:
+        if not self.cik_str:
             raise ValueError(f"Ticker '{self.query}' not found in SEC database.")
             
-        print(f"[Extract] Resolved ticker '{self.query}' to CIK {cik_str}. Fetching company facts...")
+        print(f"[Scout] Resolved ticker '{self.query}' to CIK {self.cik_str}.")
+        self.facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{self.cik_str}.json"
         
-        # Step 2: Fetch company facts
-        facts_url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik_str}.json"
-        resp = requests.get(facts_url, headers=headers)
+        return {
+            "url": self.facts_url,
+            "size_info": "Full XBRL Corporate Taxonomy"
+        }
+
+    def extract(self) -> pd.DataFrame:
+        print("[Extract] Interfacing with SEC EDGAR API...")
+        import requests
+        
+        ua = self.api_key if "@" in self.api_key else f"data-fetcher-pipeline/1.0 ({self.api_key})"
+        headers = {"User-Agent": ua}
+        
+        print(f"[Extract] Fetching company facts...")
+        resp = requests.get(self.facts_url, headers=headers)
         if resp.status_code != 200:
-            raise ValueError(f"Failed to fetch facts for CIK {cik_str}. Status: {resp.status_code}")
+            raise ValueError(f"Failed to fetch facts for CIK {self.cik_str}. Status: {resp.status_code}")
             
         data = resp.json()
         rows = []
@@ -404,7 +457,7 @@ class OpenMLFetcher(BaseFetcher):
         self.target_dataset_id: int = -1
         self.dataset_name: str = ""
 
-    def scout(self) -> None:
+    def scout(self) -> dict:
         print(f"[Scout] Searching OpenML for query '{self.query}'...")
         try:
             import openml
@@ -429,6 +482,10 @@ class OpenMLFetcher(BaseFetcher):
         self.dataset_name = str(top_dataset['name'])
         
         print(f"[Scout] Top dataset found: '{self.dataset_name}' (ID: {self.target_dataset_id})")
+        return {
+            "url": f"https://www.openml.org/d/{self.target_dataset_id}",
+            "size_info": f"{int(top_dataset['NumberOfInstances'])} rows, {int(top_dataset['NumberOfFeatures'])} columns"
+        }
 
     def extract(self) -> pd.DataFrame:
         print(f"[Extract] Downloading dataset '{self.dataset_name}' from OpenML...")
