@@ -1,0 +1,61 @@
+import os
+import sqlite3
+import pandas as pd
+
+class FormatAlchemyEngine:
+    def __init__(self, csv_filepath: str) -> None:
+        if not os.path.isfile(csv_filepath):
+            raise FileNotFoundError(f"Source CSV file not found: {csv_filepath}")
+        self.csv_filepath = csv_filepath
+        self.directory = os.path.dirname(csv_filepath)
+        filename = os.path.basename(csv_filepath)
+        self.dataset_name = os.path.splitext(filename)[0].replace("_raw", "")
+        self.db_filepath = os.path.join(self.directory, "financial_warehouse.db")
+        self.excel_filepath = os.path.join(self.directory, f"{self.dataset_name}_export.xlsx")
+
+    def csv_to_sqlite(self) -> None:
+        try:
+            df = pd.read_csv(self.csv_filepath)
+        except pd.errors.EmptyDataError as e:
+            raise ValueError(f"CSV file is empty or corrupted: {e}") from e
+            
+        try:
+            with sqlite3.connect(self.db_filepath) as conn:
+                df.to_sql(self.dataset_name, conn, if_exists="replace", index=False)
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database ingestion failed: {e}") from e
+            
+        print(f"[FormatAlchemy] Ingested CSV into SQLite database at {self.db_filepath}")
+
+    def sqlite_to_excel(self) -> None:
+        try:
+            with sqlite3.connect(self.db_filepath) as conn:
+                df = pd.read_sql_query(f"SELECT * FROM {self.dataset_name}", conn)
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database query failed: {e}") from e
+            
+        try:
+            with pd.ExcelWriter(self.excel_filepath, engine="openpyxl") as writer:
+                df.to_excel(writer, index=False, sheet_name=self.dataset_name)
+                worksheet = writer.sheets[self.dataset_name]
+                for idx, col in enumerate(df.columns):
+                    max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                    # Basic openpyxl column letter derivation
+                    col_letter = chr(65 + idx) if idx < 26 else chr(64 + (idx // 26)) + chr(65 + (idx % 26))
+                    worksheet.column_dimensions[col_letter].width = min(max_len, 100) # Cap width for sanity
+        except ImportError as e:
+            raise ImportError("Missing openpyxl library for Excel export.") from e
+        except OSError as e:
+             raise RuntimeError(f"Excel generation failed due to OS error: {e}") from e
+             
+        print(f"[FormatAlchemy] Exported SQL table to Excel at {self.excel_filepath}")
+
+    def execute_pipeline(self) -> None:
+        print("[FormatAlchemy] Initializing transformation pipeline...")
+        self.csv_to_sqlite()
+        self.sqlite_to_excel()
+        print("[FormatAlchemy] Transformation complete.")
+
+def run_alchemy(csv_filepath: str) -> None:
+    engine = FormatAlchemyEngine(csv_filepath)
+    engine.execute_pipeline()

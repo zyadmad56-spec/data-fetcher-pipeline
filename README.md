@@ -166,6 +166,7 @@ Collectively, these pipelines construct a formidable, institutionally viable dat
 
 - **Kaggle & SEC EDGAR Architecture Integration**: Fully implemented native extraction classes `KaggleFetcher` and `SECFetcher`. Configuration handling has been securely routed through the global state validation layer to prevent crashes.
 - **Cross-Platform Path Unification**: Removed all hardcoded absolute paths. Upgraded bash subprocess routing to dynamically resolve output directories (`setup_dataset_dir.sh`) independently of host operating systems.
+- **Format Alchemy ETL Module**: Deployed an isolated post-processing transformation engine (`scripts/format_alchemy.py`). Upon successful raw extraction, the pipeline prompts the user (`y/n`) to automatically infer datatypes and convert the raw CSV payload into a local SQLite database and an auto-formatted Excel workbook without violating the core "Pure Fetcher Philosophy".
 
 ## 5. How to Install
 

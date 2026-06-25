@@ -180,7 +180,7 @@ class BaseFetcher(ABC):
                 f.write(f"- {col} (Nulls: {null_count})\n")
         print(f"[Success] Automated Data Dictionary generated at {dict_path}")
 
-    def run(self):
+    def run(self) -> str:
         """Execution Flow Controller"""
         print(f"[{self.__class__.__name__}] Initiating extraction sequence for query: '{self.query}'")
         self.scout()
@@ -188,7 +188,9 @@ class BaseFetcher(ABC):
         self.validate_payload(df)
         
         safe_filename = "".join(x for x in self.query if x.isalnum() or x in " _-").strip().replace(" ", "_").lower()
-        self.save_csv(df, f"{safe_filename}_raw.csv")
+        csv_filename = f"{safe_filename}_raw.csv"
+        self.save_csv(df, csv_filename)
+        return os.path.join(self.outdir, csv_filename)
 
 
 class YahooFinanceFetcher(BaseFetcher):
@@ -466,8 +468,14 @@ def main() -> None:
         time.sleep(delay)
         
         fetcher = get_fetcher(source, query, outdir, config)
-        fetcher.run()
+        csv_path = fetcher.run()
         print("[Engine] Extraction Complete. Pipeline exiting successfully.")
+        
+        print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
+        alchemy_choice = input().strip().lower()
+        if alchemy_choice == 'y':
+            from format_alchemy import run_alchemy
+            run_alchemy(csv_path)
         
     except (ValueError, RuntimeError, ImportError) as e:
         print(f"\n[Error] {e}")
