@@ -478,16 +478,15 @@ def interactive_flow() -> tuple[str, str, str]:
     
     intent = input("\n2. What exactly are you going to use this data for? (Providing this context helps me fetch the most accurate and suitable data for your use case. If you'd rather not say, just type 'Skip' or 'تمام'): ").strip()
     
-    print("\n3. Please choose a fetching source:")
-    print("  1. Search ALL available supported sources.")
-    print("  2. Choose a specific source from our supported list.")
-    print("  3. Specify a custom mix of our supported sources.")
-    print("  4. Provide an external/custom website for me to try and fetch from.")
+    print("\n3. Please choose a fetching mode:")
+    print("  1. Standard Mode: Choose a specific source from our supported list.")
+    print("  2. Meta-Search (Coming Soon): Search ALL supported sources.")
+    print("  3. Advanced Mode (Coming Soon): Provide an external/custom website.")
     
-    source_choice = input("Enter your choice (1-4): ").strip()
+    source_choice = input("Enter your choice (1-3): ").strip()
     
     source = "openml"
-    if source_choice == '2':
+    if source_choice == '1':
         print("\nSupported Sources: [openml, kaggle, sec, fred, airbnb, yfinance]")
         source = input("Enter the specific source: ").strip().lower()
         
@@ -496,13 +495,11 @@ def interactive_flow() -> tuple[str, str, str]:
             ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle/OpenML? (proceed/switch): ").strip().lower()
             if ans == "switch":
                 source = input("Enter new source (e.g. kaggle): ").strip().lower()
-                
-    elif source_choice == '1':
-        print("\n[Mock] We will search ALL supported sources simultaneously...")
-    elif source_choice == '3':
-        print("\n[Mock] We will use a custom mix of supported sources...")
-    elif source_choice == '4':
-        print("\n[Mock] Advanced external parsing mode engaged.")
+    else:
+        print(f"\n[Notice] Advanced routing (Choices {source_choice}) is currently in development.")
+        print("Falling back to standard source selection.")
+        print("\nSupported Sources: [openml, kaggle, sec, fred, airbnb, yfinance]")
+        source = input("Enter the specific source: ").strip().lower()
 
     print("\n4. Let's define the technical shape of the required data:")
     _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
@@ -553,7 +550,10 @@ def main() -> None:
         print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
         alchemy_choice = input().strip().lower()
         if alchemy_choice == 'y':
-            from format_alchemy import run_alchemy
+            try:
+                from scripts.format_alchemy import run_alchemy
+            except ImportError:
+                from format_alchemy import run_alchemy
             run_alchemy(csv_path)
         
     except (ValueError, RuntimeError, ImportError) as e:

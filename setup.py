@@ -14,6 +14,8 @@ setup(
         "lxml>=5.1.0",
         "html5lib>=1.1",
         "openml>=0.14.0",
+        "openpyxl>=3.0.0",
+        "kaggle>=1.5.0",
     ],
     entry_points={
         "console_scripts": [
