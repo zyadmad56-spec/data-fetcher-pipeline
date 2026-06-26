@@ -10,7 +10,7 @@ class FormatAlchemyEngine:
         self.directory = os.path.dirname(csv_filepath)
         filename = os.path.basename(csv_filepath)
         self.dataset_name = os.path.splitext(filename)[0].replace("_raw", "")
-        self.db_filepath = os.path.join(self.directory, "financial_warehouse.db")
+        self.db_filepath = os.path.join(self.directory, f"{self.dataset_name}.db")
         self.excel_filepath = os.path.join(self.directory, f"{self.dataset_name}_export.xlsx")
 
     def csv_to_sqlite(self) -> None:
@@ -47,10 +47,10 @@ class FormatAlchemyEngine:
             with pd.ExcelWriter(self.excel_filepath, engine="openpyxl") as writer:
                 df.to_excel(writer, index=False, sheet_name=self.dataset_name)
                 worksheet = writer.sheets[self.dataset_name]
+                from openpyxl.utils import get_column_letter
                 for idx, col in enumerate(df.columns):
                     max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-                    # Basic openpyxl column letter derivation
-                    col_letter = chr(65 + idx) if idx < 26 else chr(64 + (idx // 26)) + chr(65 + (idx % 26))
+                    col_letter = get_column_letter(idx + 1)
                     worksheet.column_dimensions[col_letter].width = min(max_len, 100) # Cap width for sanity
         except ImportError as e:
             raise ImportError("Missing openpyxl library for Excel export.") from e
