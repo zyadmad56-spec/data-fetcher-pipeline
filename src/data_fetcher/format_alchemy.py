@@ -1,6 +1,5 @@
 import os
 import sqlite3
-import pandas as pd
 
 class FormatAlchemyEngine:
     def __init__(self, csv_filepath: str) -> None:
@@ -14,6 +13,7 @@ class FormatAlchemyEngine:
         self.excel_filepath = os.path.join(self.directory, f"{self.dataset_name}_export.xlsx")
 
     def csv_to_sqlite(self) -> None:
+        import pandas as pd
         try:
             with sqlite3.connect(self.db_filepath) as conn:
                 chunksize = 100000
@@ -29,6 +29,7 @@ class FormatAlchemyEngine:
         print(f"[FormatAlchemy] Ingested CSV into SQLite database at {self.db_filepath}")
 
     def sqlite_to_excel(self) -> None:
+        import pandas as pd
         try:
             with sqlite3.connect(self.db_filepath) as conn:
                 cursor = conn.cursor()

@@ -4,13 +4,12 @@ import argparse
 import time
 import random
 
-sys.stdout.reconfigure(encoding='utf-8')
-
 from .config import setup_wizard
 from .wizard import interactive_flow
 from .factory import get_fetcher
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description="Data Fetcher Background Engine")
     parser.add_argument("--source", required=False, help="Target data platform (e.g., yfinance, fred, airbnb)")
     parser.add_argument("--query", required=False, help="Topic, ticker symbol, or series ID")
@@ -57,10 +56,7 @@ def main() -> None:
         print(f"\n[Prompt] {len(csv_paths)} dataset(s) fetched successfully. Would you like to initialize the Format Alchemy engine to convert them to SQL and Excel? (y/n)")
         alchemy_choice = input().strip().lower()
         if alchemy_choice == 'y':
-            try:
-                from scripts.format_alchemy import run_alchemy
-            except ImportError:
-                from format_alchemy import run_alchemy
+            from data_fetcher.format_alchemy import run_alchemy
             for path in csv_paths:
                 print(f"\n[Engine] Starting Format Alchemy for: {os.path.basename(path)}")
                 run_alchemy(path)

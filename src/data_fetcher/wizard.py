@@ -8,9 +8,7 @@ def interactive_flow() -> tuple[list[str], str, str]:
     
     topic = input("1. What specific topic or domain do you need datasets for? ").strip()
     
-    intent = input("\n2. What exactly are you going to use this data for? (Providing this context helps me fetch the most accurate and suitable data for your use case. If you'd rather not say, just type 'Skip' or 'تمام'): ").strip()
-    
-    print("\n3. Where should we fetch this data from?")
+    print("\n2. Where should we fetch this data from?")
     valid_sources = ["kaggle", "openml", "sec", "fred", "airbnb", "yfinance"]
     print(f"   Supported data banks: {valid_sources}")
     print("   - Type the exact name of a specific site (or comma-separated list like 'kaggle, sec').")
@@ -55,7 +53,7 @@ def interactive_flow() -> tuple[list[str], str, str]:
                         print(f"  - Review the official API documentation for {s.upper()} for rate limits.")
                         print(f"  - Verify Authentication requirements (OAuth, Bearer Token, API Key).")
                         print("\nPhase 2: Structural Implementation Template")
-                        print(f"  To integrate this source, create `scripts/fetchers/{s}.py` and register the class in `scripts/factory.py`:\n")
+                        print(f"  To integrate this source, create `data_fetcher/fetchers/{s}.py` and register the class in `data_fetcher/factory.py`:\n")
                         print(f"class {s.capitalize()}Fetcher(BaseFetcher):")
                         print(f"    def scout(self) -> dict:")
                         print(f"        print(f\"[Scout] Validating parameters for {s.upper()}...\")")
@@ -66,7 +64,7 @@ def interactive_flow() -> tuple[list[str], str, str]:
                         print(f"\n    def extract(self) -> pd.DataFrame:")
                         print(f"        print(f\"[Extract] Pulling raw payloads from {s.upper()}...\")")
                         print(f"        import pandas as pd")
-                        print(f"        df = pd.DataFrame() # Implement actual requests loop here")
+                        print(f"        df = pd.DataFrame()")
                         print(f"        return df")
                         print(f"{'='*50}")
             
@@ -85,20 +83,8 @@ def interactive_flow() -> tuple[list[str], str, str]:
                 sources = ["kaggle"]
                 print("\n[Wizard] List empty after dropping sec. Switched source to Kaggle.")
 
-    print("\n4. Let's define the technical shape of the required data:")
-    _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
-    _ = input("  - Features (Any specific columns/variables that MUST be present?): ").strip()
-    _ = input("  - Format (Preferred file format e.g., CSV, JSON, Parquet, Excel): ").strip()
-    _ = input("  - Timeframe (Any specific date range?): ").strip()
-    
-    print("\n5. How would you like the data delivered?")
-    print("  1. Cleaned: Automatically handle missing values (drop/impute) and remove duplicates.")
-    print("  2. Raw: Deliver the dataset exactly as fetched without any modifications.")
-    _ = input("Enter your choice (1 or 2): ").strip()
-    
     print("\n[Wizard] All parameters collected successfully. Initializing Fetcher Engine...\n")
     
-    # Only fallback if topic is empty
     if not topic:
         topic = "finance"
     

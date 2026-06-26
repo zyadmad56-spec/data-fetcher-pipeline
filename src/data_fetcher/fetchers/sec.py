@@ -1,7 +1,11 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import pandas as pd
+from typing import Dict
+
 import requests
 import requests.exceptions
-import pandas as pd
-from typing import Dict
 
 from ..base import BaseFetcher
 from ..config import get_api_key, DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -74,6 +78,7 @@ class SECFetcher(BaseFetcher):
                                 "end": obs.get("end")
                             }
                             
+        import pandas as pd
         df = pd.DataFrame(facts_generator())
         
         if df.empty:

@@ -1,13 +1,10 @@
-import os
+import pathlib
 import json
 import pytest
 from unittest.mock import patch, mock_open
 
-from scripts.config import setup_wizard
-from scripts.factory import get_fetcher
-from scripts.fetchers.fred import FREDFetcher
-from scripts.fetchers.openml import OpenMLFetcher
-from scripts.fetchers.generic import GenericFetcher
+from data_fetcher.config import setup_wizard
+from data_fetcher.factory import get_fetcher
 
 def test_setup_wizard_existing_valid_config():
     """Verify that an existing valid config.json bypasses the wizard and loads state."""
@@ -29,16 +26,19 @@ def test_setup_wizard_manual_invalid_json():
                     assert isinstance(config, dict)
                     assert len(config) == 0
 
-def test_get_fetcher_strategy_routing():
+def test_get_fetcher_strategy_routing(tmp_path: pathlib.Path) -> None:
     """Verify polymorphic Strategy pattern extraction routing."""
-    config = {}
-    
-    fetcher_fred = get_fetcher("fred", "GDP", "/tmp/out", config)
+    from data_fetcher.fetchers.fred import FREDFetcher
+    from data_fetcher.fetchers.openml import OpenMLFetcher
+
+    config: dict[str, str] = {}
+    outdir = str(tmp_path)
+
+    fetcher_fred = get_fetcher("fred", "GDP", outdir, config)
     assert isinstance(fetcher_fred, FREDFetcher)
-    
-    fetcher_openml = get_fetcher("openml", "finance", "/tmp/out", config)
+
+    fetcher_openml = get_fetcher("openml", "finance", outdir, config)
     assert isinstance(fetcher_openml, OpenMLFetcher)
-    
-    # Unimplemented or unknown source should raise ValueError
+
     with pytest.raises(ValueError, match="is not registered"):
-        get_fetcher("unknown_source", "data", "/tmp/out", config)
+        get_fetcher("unknown_source", "data", outdir, config)

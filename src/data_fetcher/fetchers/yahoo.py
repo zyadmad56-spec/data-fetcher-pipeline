@@ -1,4 +1,7 @@
-import pandas as pd
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import pandas as pd
 
 from ..base import BaseFetcher
 
@@ -6,6 +9,7 @@ class YahooFinanceFetcher(BaseFetcher):
     def scout(self) -> dict:
         print(f"[Scout] Validating Yahoo Finance Ticker '{self.query}'...")
         import yfinance as yf
+        import pandas as pd
         ticker = yf.Ticker(self.query)
         hist = ticker.history(period="5d")
         if hist.empty:
@@ -19,6 +23,7 @@ class YahooFinanceFetcher(BaseFetcher):
     def extract(self) -> pd.DataFrame:
         print("[Extract] Fetching historical market data...")
         import yfinance as yf
+        import pandas as pd
         ticker = yf.Ticker(self.query)
         df = ticker.history(period="max").reset_index()
         # Constraint Enforced: Zero Imputation for weekends/holidays.

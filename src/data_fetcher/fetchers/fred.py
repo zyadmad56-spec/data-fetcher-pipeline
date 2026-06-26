@@ -1,6 +1,10 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import pandas as pd
+
 import requests
 import requests.exceptions
-import pandas as pd
 
 from ..base import BaseFetcher
 from ..config import get_api_key, DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -19,6 +23,7 @@ class FREDFetcher(BaseFetcher):
         }
 
     def extract(self) -> pd.DataFrame:
+        import pandas as pd
         print("[Extract] Interfacing with FRED API...")
         url = f"https://api.stlouisfed.org/fred/series/observations?series_id={self.query}&api_key={self.api_key}&file_type=json"
         try:

@@ -1,6 +1,9 @@
-import os
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import pandas as pd
 
-import pandas as pd
+import os
 
 from ..base import BaseFetcher
 from ..config import get_api_key
@@ -18,6 +21,8 @@ class KaggleFetcher(BaseFetcher):
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with Kaggle API...")
         import tempfile
+        import glob
+        import pandas as pd
         import glob
 
         os.environ['KAGGLE_USERNAME'] = self.username

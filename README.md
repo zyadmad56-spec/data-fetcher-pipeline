@@ -51,10 +51,10 @@ You can now execute the engine directly from any directory:
 data-fetcher --source openml --query "finance"
 ```
 
-**Method 2: Interactive Bash (Linux/Mac/Advanced Users)**
-Retain the classic Unix approach by invoking the guided shell wizard directly. This method seamlessly manages interactive prompts and Python handoffs.
+**Method 2: Local Python Execution**
+Run the module directly without installing globally:
 ```bash
-./scripts/run_pipeline.sh
+python -m data_fetcher.cli
 ```
 
 #### AI Agent Deployment Context
@@ -98,7 +98,7 @@ Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 ```
 
 #### OpenML Interactive Strategy
-The pipeline integrates `openml` to allow CLI-based intelligent lookup. By triggering the `run_pipeline.sh` script, the `OpenMLFetcher` subclass resolves dynamic text queries (e.g., "finance") against the OpenML global index, applying secondary sorting algorithms (descending by `NumberOfInstances`) to extract and reconstruct the most optimal dataset payload.
+The pipeline integrates `openml` to allow CLI-based intelligent lookup. By triggering the `data-fetcher` executable, the `OpenMLFetcher` subclass resolves dynamic text queries (e.g., "finance") against the OpenML global index, applying secondary sorting algorithms (descending by `NumberOfInstances`) to extract and reconstruct the most optimal dataset payload.
 
 
 
@@ -121,25 +121,51 @@ data-fetcher-pipeline/
 ├── SKILL.md
 ├── LICENSE
 ├── requirements.txt
+├── setup.py
 ├── config_template.json
 ├── references/
 │   └── source-constraints.md
-├── scripts/
-│   ├── fetcher_engine.py
-│   ├── format_alchemy.py
-│   └── run_pipeline.sh
+├── src/
+│   └── data_fetcher/
+│       ├── __init__.py
+│       ├── base.py
+│       ├── cli.py
+│       ├── config.py
+│       ├── factory.py
+│       ├── wizard.py
+│       ├── format_alchemy.py
+│       └── fetchers/
+│           ├── __init__.py
+│           ├── airbnb.py
+│           ├── fred.py
+│           ├── generic.py
+│           ├── kaggle.py
+│           ├── openml.py
+│           ├── sec.py
+│           └── yahoo.py
 └── tests/
-    └── test_fetcher_engine.py
+    ├── test_base_fetcher.py
+    ├── test_cli.py
+    ├── test_config.py
+    ├── test_fetcher_engine.py
+    ├── test_fetchers.py
+    └── test_format_alchemy.py
+```
 
-- **`fetcher_engine.py`**: A strategy-pattern Python engine. Handles polymorphic instantiation of API extraction handlers (e.g., `YahooFinanceFetcher`, `FREDFetcher`, `OpenMLFetcher`). Features native, OS-independent directory provisioning without shell dependencies.
-- **`run_pipeline.sh`**: Acts as the primary interactive entrypoint, processing user input flows and delegating execution contexts securely to the underlying Python engine via `sys.argv`.
+- **`cli.py`**: Entry point. Parses CLI arguments, orchestrates the setup wizard, and dispatches to the factory.
+- **`base.py`**: Abstract Base Class enforcing the scout → pre-flight → extract → validate → save lifecycle.
+- **`factory.py`**: Strategy Factory. Lazy-loads and routes source names to their concrete `BaseFetcher` subclass.
+- **`config.py`**: Credential management. Secure JSON config at `~/.config/data-fetcher-pipeline/config.json`.
+- **`wizard.py`**: Interactive zero-args onboarding flow.
+- **`fetchers/`**: One module per data source. Each implements `scout()` and `extract()`.
+- **`format_alchemy.py`**: Post-extraction CSV → SQLite → Excel transformation pipeline. without shell dependencies.
 
 ### Antigravity's Architectural Assessment
 
 *An objective architectural evaluation of the `data-fetcher-pipeline`.*
 
 **Hybrid Installation Viability:** 
-Deploying both a native Python package (`pip install .`) and a bash-wrapper (`run_pipeline.sh`) introduces a dual-maintenance burden. Shell scripts often suffer POSIX incompatibility on Windows environments, while `pip install` forces users to manage virtual environments to avoid globally scoped dependency conflicts. However, this architectural duality significantly maximizes cross-platform accessibility. Python-native deployments empower robust CLI toolchains (`data-fetcher`), whereas bash entrypoints gracefully handle rapid interactive wizarding. The trade-off is heavily weighted toward UX superiority at the cost of codebase redundancy.
+Deploying as a native Python package (`pip install .`) maximizes cross-platform accessibility. Python-native deployments empower robust CLI toolchains (`data-fetcher`) and gracefully handle rapid interactive wizarding.
 
 **Data Source Efficacy:**
 The selected data architectures are fundamentally robust and deeply relevant for modern data engineering. 
@@ -152,7 +178,7 @@ Collectively, these pipelines construct a formidable, institutionally viable dat
 
 - **Kaggle & SEC EDGAR Architecture Integration**: Fully implemented native extraction classes `KaggleFetcher` and `SECFetcher`. Configuration handling has been securely routed through the global state validation layer to prevent crashes.
 - **Cross-Platform Path Unification**: Removed all hardcoded absolute paths and shell dependencies. Directory provisioning is now 100% native Python, ensuring absolute compatibility across Windows, macOS, and Linux without fragile POSIX shell fallbacks.
-- **Format Alchemy ETL Module**: Deployed an isolated post-processing transformation engine (`scripts/format_alchemy.py`). Upon successful raw extraction, the pipeline prompts the user (`y/n`) to automatically infer datatypes and convert the raw CSV payload into a local SQLite database and an auto-formatted Excel workbook without violating the core "Pure Fetcher Philosophy".
+- **Format Alchemy ETL Module**: Deployed an isolated post-processing transformation engine (`src/data_fetcher/format_alchemy.py`). Upon successful raw extraction, the pipeline prompts the user (`y/n`) to automatically infer datatypes and convert the raw CSV payload into a local SQLite database and an auto-formatted Excel workbook without violating the core "Pure Fetcher Philosophy".
 
 ## 5. How to Install
 
@@ -174,5 +200,5 @@ For new engineers cloning the repository locally, execute the following protocol
 3. **Trigger First-Run Wizard:**
    Execute the engine without runtime arguments. The architecture will intercept the empty payload and automatically guide you through a secure setup sequence to instantiate your API keys.
    ```bash
-   python scripts/fetcher_engine.py
+   data-fetcher
    ```

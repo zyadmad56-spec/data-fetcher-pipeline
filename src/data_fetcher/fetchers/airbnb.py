@@ -1,9 +1,13 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import pandas as pd
+
 import os
 import tempfile
 
 import requests
 import requests.exceptions
-import pandas as pd
 
 from ..base import BaseFetcher
 from ..config import DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -43,7 +47,7 @@ class AirbnbFetcher(BaseFetcher):
         }
 
     def extract(self) -> pd.DataFrame:
-
+        import pandas as pd
         print("[Extract] Downloading & safely decompressing .gz payload...")
         
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}

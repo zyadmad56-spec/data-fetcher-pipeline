@@ -1,9 +1,10 @@
 import os
 import re
-
-import pandas as pd
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 class BaseFetcher(ABC):
     """
@@ -47,7 +48,7 @@ class BaseFetcher(ABC):
         pass
 
     @abstractmethod
-    def extract(self) -> pd.DataFrame:
+    def extract(self) -> 'pd.DataFrame':
         """Phase 2 (Extraction): Download and format raw payloads."""
         pass
 
@@ -70,7 +71,7 @@ class BaseFetcher(ABC):
             else:
                 print("[Error] Invalid input. Please type 'y', 'n', or a number.")
 
-    def validate_payload(self, df: pd.DataFrame) -> None:
+    def validate_payload(self, df: 'pd.DataFrame') -> None:
         """Universal Payload Validator (Null-Density Check)"""
         if df.empty:
             raise ValueError("Graceful Fallback Triggered: Dataframe is completely empty.")
@@ -81,7 +82,7 @@ class BaseFetcher(ABC):
         
         print("[Validator] Payload passed Null-Density Check.")
 
-    def save_csv(self, df: pd.DataFrame, filename: str) -> None:
+    def save_csv(self, df: 'pd.DataFrame', filename: str) -> None:
         """Absolute Raw Data Preservation (Zero-Cleaning)"""
         filepath = os.path.join(self.outdir, filename)
         df.to_csv(filepath, index=False)

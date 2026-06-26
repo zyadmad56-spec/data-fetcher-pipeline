@@ -1,5 +1,6 @@
 # Source-Specific Target Constraints & Heuristics
 
+Credential testing is complete.
 - **GitHub Constraints [PLANNED — NOT YET IMPLEMENTED]:** Restrict API searches to repositories containing data identifiers in `README.md`. Force the scraper to look exclusively for tabular file extensions (`.csv`, `.xlsx`) in paths containing `/data/`, `/datasets/`, or `/raw/`. Do not download source code files.
 - **Yahoo Finance Adaptation:** 
   - **Phase 1 (Scouting):** Validate the existence of the Ticker Symbol (e.g., AMZN, TM). Fetch a small sample (e.g., 5 days history or basic info) to ensure the ticker is active and not delisted.

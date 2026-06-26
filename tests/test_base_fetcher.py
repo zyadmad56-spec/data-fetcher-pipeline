@@ -2,11 +2,9 @@ import os
 import pathlib
 from unittest import mock
 
-import numpy as np
-import pandas as pd
 import pytest
 
-from scripts.base import BaseFetcher
+from data_fetcher.base import BaseFetcher
 
 
 class DummyFetcher(BaseFetcher):
@@ -14,7 +12,8 @@ class DummyFetcher(BaseFetcher):
     def scout(self) -> dict:
         return {"url": "http://dummy.url", "size_info": "100 MB"}
 
-    def extract(self) -> pd.DataFrame:
+    def extract(self) -> 'pd.DataFrame':
+        import pandas as pd
         return pd.DataFrame({"A": [1, 2, 3], "B": [4, 5, 6]})
 
 
@@ -28,12 +27,15 @@ def dummy_fetcher(tmp_path: pathlib.Path) -> DummyFetcher:
 
 
 def test_validate_payload_empty_df(dummy_fetcher: DummyFetcher) -> None:
+    import pandas as pd
     empty_df = pd.DataFrame()
     with pytest.raises(ValueError, match="Graceful Fallback Triggered: Dataframe is completely empty."):
         dummy_fetcher.validate_payload(empty_df)
 
 
 def test_validate_payload_high_null_density(dummy_fetcher: DummyFetcher) -> None:
+    import pandas as pd
+    import numpy as np
     high_null_df = pd.DataFrame({
         "A": [1, np.nan, np.nan, np.nan, np.nan],
         "B": [np.nan, np.nan, np.nan, np.nan, np.nan]
@@ -44,6 +46,7 @@ def test_validate_payload_high_null_density(dummy_fetcher: DummyFetcher) -> None
 
 
 def test_validate_payload_passes_clean_data(dummy_fetcher: DummyFetcher) -> None:
+    import pandas as pd
     clean_df = pd.DataFrame({"A": [1, 2], "B": [3, 4]})
     try:
         dummy_fetcher.validate_payload(clean_df)
@@ -52,6 +55,7 @@ def test_validate_payload_passes_clean_data(dummy_fetcher: DummyFetcher) -> None
 
 
 def test_save_csv_creates_file_and_dictionary(dummy_fetcher: DummyFetcher) -> None:
+    import pandas as pd
     df = pd.DataFrame({"A": [1, 2]})
     filename = "test_data_raw.csv"
     
@@ -87,6 +91,7 @@ def test_pre_flight_raises_on_no(mock_input: mock.MagicMock, dummy_fetcher: Dumm
 
 @mock.patch("builtins.input", return_value="10")
 def test_run_slices_dataframe_to_row_limit(mock_input: mock.MagicMock, dummy_fetcher: DummyFetcher) -> None:
+    import pandas as pd
     df_100 = pd.DataFrame({"A": range(100)})
     with mock.patch.object(dummy_fetcher, 'extract', return_value=df_100):
         filepath = dummy_fetcher.run()
