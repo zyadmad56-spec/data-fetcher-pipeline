@@ -536,39 +536,35 @@ def interactive_flow() -> tuple[str, str, str]:
     
     intent = input("\n2. What exactly are you going to use this data for? (Providing this context helps me fetch the most accurate and suitable data for your use case. If you'd rather not say, just type 'Skip' or 'تمام'): ").strip()
     
-    print("\n3. Please choose a fetching mode:")
-    print("  1. Standard Mode: Choose a specific source from our supported list.")
-    print("  2. Meta-Search (Coming Soon): Search ALL supported sources.")
-    print("  3. Advanced Mode (Coming Soon): Provide an external/custom website.")
+    print("\n3. Where should we fetch this data from?")
+    valid_sources = ["kaggle", "openml", "sec", "fred", "airbnb", "yfinance"]
+    print(f"   Supported data banks: {valid_sources}")
+    print("   - Type the exact name of a specific site.")
+    print("   - Type 'all' to run a Meta-Search and sequentially extract from multiple top sites.")
+    print("   - Or simply press Enter to default to Kaggle (Highly Recommended).")
     
-    source_choice = input("Enter your choice (1-3): ").strip()
+    source = input("Enter source (default: kaggle): ").strip().lower()
     
-    source = "openml"
-    valid_sources = ["openml", "kaggle", "sec", "fred", "airbnb", "yfinance"]
-    
-    if source_choice == '1':
-        print(f"\nSupported Sources: {valid_sources}")
-        source = input("Enter the specific source: ").strip().lower()
-        while source not in valid_sources:
-            print(f"[Error] '{source}' is not a supported source.")
-            source = input(f"Please choose from {valid_sources}: ").strip().lower()
-        
+    if not source:
+        print("\n[Wizard] No source specified. Defaulting to Kaggle as the primary data bank.")
+        source = "kaggle"
+    elif source == 'all':
+        print("\n[Wizard] Meta-Search activated. Will aggregate data from multiple top-tier sources.")
+    else:
+        while source not in valid_sources and source != 'all':
+            print(f"\n[Error] '{source}' is not a supported source.")
+            source = input(f"Please choose from {valid_sources}, 'all', or press Enter for Kaggle: ").strip().lower()
+            if not source:
+                print("\n[Wizard] Defaulting to Kaggle.")
+                source = "kaggle"
+                break
+                
         topic_lower = topic.lower()
         if source == "sec" and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
-            ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle/OpenML? (proceed/switch): ").strip().lower()
+            ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle? (proceed/switch): ").strip().lower()
             if ans == "switch":
-                source = input("Enter new source (e.g. kaggle): ").strip().lower()
-                while source not in valid_sources:
-                    print(f"[Error] '{source}' is not a supported source.")
-                    source = input(f"Please choose from {valid_sources}: ").strip().lower()
-    else:
-        print(f"\n[Notice] Advanced routing (Choices {source_choice}) is currently in development.")
-        print("Falling back to standard source selection.")
-        print(f"\nSupported Sources: {valid_sources}")
-        source = input("Enter the specific source: ").strip().lower()
-        while source not in valid_sources:
-            print(f"[Error] '{source}' is not a supported source.")
-            source = input(f"Please choose from {valid_sources}: ").strip().lower()
+                source = "kaggle"
+                print("\n[Wizard] Switched source to Kaggle.")
 
     print("\n4. Let's define the technical shape of the required data:")
     _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
@@ -612,9 +608,26 @@ def main() -> None:
         print(f"[Engine] Imposing humanized delay of {delay:.2f} seconds to simulate human traffic...")
         time.sleep(delay)
         
-        fetcher = get_fetcher(source, query, outdir, config)
-        csv_path = fetcher.run()
-        print("[Engine] Extraction Complete. Pipeline exiting successfully.")
+        if source == "all":
+            sources_to_run = ["kaggle", "openml"] # Best general purpose tabular sources
+            print(f"\n[Meta-Search] Executing multi-source extraction across: {sources_to_run}")
+            csv_paths = []
+            for s in sources_to_run:
+                try:
+                    fetcher = get_fetcher(s, query, outdir, config)
+                    csv_paths.append(fetcher.run())
+                except Exception as e:
+                    print(f"\n[Meta-Search] Source '{s}' failed or was bypassed: {e}\n")
+            if csv_paths:
+                print(f"\n[Engine] Meta-Search Complete. {len(csv_paths)} datasets extracted successfully.")
+                csv_path = csv_paths[0] # Default to first successful payload for Alchemy
+            else:
+                print("\n[Engine] Meta-Search yielded no data. Aborting.")
+                sys.exit(1)
+        else:
+            fetcher = get_fetcher(source, query, outdir, config)
+            csv_path = fetcher.run()
+            print("[Engine] Extraction Complete. Pipeline exiting successfully.")
         
         print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
         alchemy_choice = input().strip().lower()
