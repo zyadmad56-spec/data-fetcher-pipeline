@@ -3,13 +3,11 @@ import json
 import pytest
 from unittest.mock import patch, mock_open
 
-from scripts.fetcher_engine import (
-    setup_wizard,
-    get_fetcher,
-    FREDFetcher,
-    OpenMLFetcher,
-    GenericFetcher
-)
+from scripts.config import setup_wizard
+from scripts.factory import get_fetcher
+from scripts.fetchers.fred import FREDFetcher
+from scripts.fetchers.openml import OpenMLFetcher
+from scripts.fetchers.generic import GenericFetcher
 
 def test_setup_wizard_existing_valid_config():
     """Verify that an existing valid config.json bypasses the wizard and loads state."""
@@ -41,6 +39,6 @@ def test_get_fetcher_strategy_routing():
     fetcher_openml = get_fetcher("openml", "finance", "/tmp/out", config)
     assert isinstance(fetcher_openml, OpenMLFetcher)
     
-    # Unimplemented or unknown source should fallback to GenericFetcher
-    fetcher_generic = get_fetcher("unknown_source", "data", "/tmp/out", config)
-    assert isinstance(fetcher_generic, GenericFetcher)
+    # Unimplemented or unknown source should raise ValueError
+    with pytest.raises(ValueError, match="is not registered"):
+        get_fetcher("unknown_source", "data", "/tmp/out", config)

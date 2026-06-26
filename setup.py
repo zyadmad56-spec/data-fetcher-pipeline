@@ -4,11 +4,10 @@ setup(
     name="data-fetcher-pipeline",
     version="1.0.0",
     description="A professional-grade, architecture-driven retrieval pipeline for fetching raw datasets.",
-    packages=["scripts"],
+    packages=["scripts", "scripts.fetchers"],
     install_requires=[
         "pandas>=2.0.0",
         "requests>=2.31.0",
-        "python-dotenv>=1.0.0",
         "yfinance>=0.2.36",
         "beautifulsoup4>=4.12.0",
         "lxml>=5.1.0",
@@ -19,7 +18,7 @@ setup(
     ],
     entry_points={
         "console_scripts": [
-            "data-fetcher=scripts.fetcher_engine:main",
+            "data-fetcher=scripts.cli:main",
         ],
     },
 )

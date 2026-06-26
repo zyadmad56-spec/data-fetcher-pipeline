@@ -45,11 +45,15 @@ class FormatAlchemyEngine:
             
         try:
             with pd.ExcelWriter(self.excel_filepath, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name=self.dataset_name)
-                worksheet = writer.sheets[self.dataset_name]
+                sheet_name = self.dataset_name[:31]
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+                worksheet = writer.sheets[sheet_name]
                 from openpyxl.utils import get_column_letter
                 for idx, col in enumerate(df.columns):
-                    max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                    col_max_len = df[col].astype(str).map(len).max()
+                    if pd.isna(col_max_len):
+                        col_max_len = 0
+                    max_len = int(max(col_max_len, len(col))) + 2
                     col_letter = get_column_letter(idx + 1)
                     worksheet.column_dimensions[col_letter].width = min(max_len, 100) # Cap width for sanity
         except ImportError as e:

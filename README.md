@@ -22,7 +22,7 @@ The pipeline is architected to optimize developer velocity while maintaining str
 The pipeline dynamically provisions directory structures to prevent filesystem pollution. Data partitions are generated sequentially based on the target `source`, `format`, and `topic` schema.
 
 ```text
-~/Desktop/datasets_of_data-fetcher-pipeline/
+./data_raw/datasets_of_data-fetcher-pipeline/
  ├── kaggle/
  │ └── CSV/
  │   └── retail_sales_data_2024/
@@ -100,19 +100,7 @@ Fetch the housing prices dataset from Kaggle using the data-fetcher-pipeline.
 #### OpenML Interactive Strategy
 The pipeline integrates `openml` to allow CLI-based intelligent lookup. By triggering the `run_pipeline.sh` script, the `OpenMLFetcher` subclass resolves dynamic text queries (e.g., "finance") against the OpenML global index, applying secondary sorting algorithms (descending by `NumberOfInstances`) to extract and reconstruct the most optimal dataset payload.
 
-### Containerized Execution (Docker)
 
-When running the pipeline within a Docker container, the downloaded files will be written to an isolated filesystem unless you explicitly map a volume to your host machine.
-
-1. Create a `.env` file based on `.env.example` and populate your API keys (for stateless execution environments).
-2. Run the container, passing the `.env` file and mapping your host's Desktop to the container's `/output` directory. The pipeline will automatically detect the `OUTPUT_DIR` environment variable.
-
-```bash
-docker run --env-file .env \
-  -e OUTPUT_DIR=/output \
-  -v ~/Desktop:/output \
-  your-docker-image-name
-```
 
 ### Supported Data Sources
 
@@ -133,7 +121,6 @@ data-fetcher-pipeline/
 ├── SKILL.md
 ├── LICENSE
 ├── requirements.txt
-├── .env.example
 ├── config_template.json
 ├── references/
 │   └── source-constraints.md
@@ -170,6 +157,9 @@ Collectively, these pipelines construct a formidable, institutionally viable dat
 ## 5. How to Install
 
 For new engineers cloning the repository locally, execute the following protocol:
+
+> **A Quick Note on the Package Footprint:**
+> You might notice the `tests/` folder is visible right here on GitHub. We keep it tracked because it acts as essential, living documentation for developers and powers our CI/CD infrastructure. But don't worry about bloat! When you run a local `pip install`, Python's `setup.py` steps in and automatically filters out the test files. This guarantees that the package installed on your machine remains incredibly lightweight, clean, and free of any unnecessary testing overhead.
 
 1. **Clone the Repository & Navigate:**
    ```bash
