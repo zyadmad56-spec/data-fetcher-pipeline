@@ -676,16 +676,16 @@ def main() -> None:
             sys.exit(1)
             
         print(f"\n[Engine] Extraction Complete. {len(csv_paths)} datasets secured.")
-        csv_path = csv_paths[0] # Default to first successful payload for Alchemy
-        
-        print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
+        print(f"\n[Prompt] {len(csv_paths)} dataset(s) fetched successfully. Would you like to initialize the Format Alchemy engine to convert them to SQL and Excel? (y/n)")
         alchemy_choice = input().strip().lower()
         if alchemy_choice == 'y':
             try:
                 from scripts.format_alchemy import run_alchemy
             except ImportError:
                 from format_alchemy import run_alchemy
-            run_alchemy(csv_path)
+            for path in csv_paths:
+                print(f"\n[Engine] Starting Format Alchemy for: {os.path.basename(path)}")
+                run_alchemy(path)
         
     except (ValueError, RuntimeError, ImportError) as e:
         print(f"\n[Error] {e}")
