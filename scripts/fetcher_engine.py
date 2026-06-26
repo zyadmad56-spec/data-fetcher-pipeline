@@ -20,8 +20,17 @@ def setup_wizard() -> Dict[str, str]:
     config_dir, config_file = get_config_paths()
     
     if os.path.exists(config_file):
-        with open(config_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"\n[Warning] The existing configuration file ({config_file}) is corrupt or contains invalid JSON.")
+            print(f"Error Details: {e}")
+            ans = input("Would you like to overwrite it and reconfigure? (y/n): ").strip().lower()
+            if ans not in ['y', 'yes']:
+                print("[Wizard] Exiting to prevent configuration conflicts. Please fix the file manually.")
+                sys.exit(1)
+            print("[Wizard] Proceeding to reconfigure...\n")
             
     print("\nWelcome to the Data Fetcher Pipeline! Before we can fetch data, we need to configure your API keys (e.g., Kaggle, FRED).")
     print(f"To ensure security and avoid exposing keys in your project folder, configurations will be saved globally at: {config_file}\n")

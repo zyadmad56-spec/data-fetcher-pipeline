@@ -135,12 +135,14 @@ data-fetcher-pipeline/
 ├── requirements.txt
 ├── .env.example
 ├── config_template.json
-├── data-fetcher-pipeline.skill
 ├── references/
 │   └── source-constraints.md
-└── scripts/
-    ├── fetcher_engine.py
-    └── run_pipeline.sh
+├── scripts/
+│   ├── fetcher_engine.py
+│   ├── format_alchemy.py
+│   └── run_pipeline.sh
+└── tests/
+    └── test_fetcher_engine.py
 
 - **`fetcher_engine.py`**: A strategy-pattern Python engine. Handles polymorphic instantiation of API extraction handlers (e.g., `YahooFinanceFetcher`, `FREDFetcher`, `OpenMLFetcher`). Features native, OS-independent directory provisioning without shell dependencies.
 - **`run_pipeline.sh`**: Acts as the primary interactive entrypoint, processing user input flows and delegating execution contexts securely to the underlying Python engine via `sys.argv`.

@@ -30,6 +30,9 @@ If executing within a legacy or automated container environment, manually map cr
 ### 3. Engine Execution and Zero-Imputation Purity
 The strategy-pattern Python engine parses arguments (`--source`, `--query`) and handles polymorphic instantiation of API extraction handlers. The payload is extracted precisely as served by the upstream source, preserving exact dimensions without unapproved imputation.
 
+### 4. Post-Processing ETL (Format Alchemy)
+After raw data extraction, the pipeline seamlessly integrates with an optional ETL module (`format_alchemy.py`). This engine chunks massive CSV payloads directly into memory-safe SQLite databases (`.db`) and exports capped Excel workbooks natively, preventing out-of-memory errors.
+
 ## Advanced features
 
 **Automated Metadata Generation**
@@ -63,7 +66,10 @@ data-fetcher-pipeline/
 │   └── source-constraints.md
 └── scripts/
     ├── fetcher_engine.py
+    ├── format_alchemy.py
     └── run_pipeline.sh
+└── tests/
+    └── test_fetcher_engine.py
 ```
 
 For a comprehensive evaluation of the architecture, refer to the assessment section inside `README.md`.
