@@ -526,7 +526,7 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
     return fetcher_class(query, outdir, config)
 
 
-def interactive_flow() -> tuple[str, str, str]:
+def interactive_flow() -> tuple[list[str], str, str]:
     """Interactive wizard to guide the user when run in zero-args mode."""
     print("==========================================")
     print("Welcome to the Data Fetcher Pipeline")
@@ -539,32 +539,77 @@ def interactive_flow() -> tuple[str, str, str]:
     print("\n3. Where should we fetch this data from?")
     valid_sources = ["kaggle", "openml", "sec", "fred", "airbnb", "yfinance"]
     print(f"   Supported data banks: {valid_sources}")
-    print("   - Type the exact name of a specific site.")
-    print("   - Type 'all' to run a Meta-Search and sequentially extract from multiple top sites.")
-    print("   - Or simply press Enter to default to Kaggle (Highly Recommended).")
+    print("   - Type the exact name of a specific site (or comma-separated list like 'kaggle, sec').")
+    print("   - Type 'all' to run a Meta-Search across all supported sites.")
+    print("   - Or simply press Enter to proceed.")
     
-    source = input("Enter source (default: kaggle): ").strip().lower()
+    source_input = input("Enter source: ").strip().lower()
     
-    if not source:
-        print("\n[Wizard] No source specified. Defaulting to Kaggle as the primary data bank.")
-        source = "kaggle"
-    elif source == 'all':
-        print("\n[Wizard] Meta-Search activated. Will aggregate data from multiple top-tier sources.")
-    else:
-        while source not in valid_sources and source != 'all':
-            print(f"\n[Error] '{source}' is not a supported source.")
-            source = input(f"Please choose from {valid_sources}, 'all', or press Enter for Kaggle: ").strip().lower()
-            if not source:
-                print("\n[Wizard] Defaulting to Kaggle.")
-                source = "kaggle"
+    sources = []
+    
+    while True:
+        if not source_input:
+            ans = input("\n[Wizard] You did not specify a website. I will default to fetching from Kaggle. Is this acceptable, or would you prefer I pull from another site? (Type 'y' for Kaggle, 'all' to pull from all registered sites, or type specific sites like 'site1, site2'): ").strip().lower()
+            if ans in ['y', 'yes']:
+                sources = ["kaggle"]
                 break
+            elif ans == 'all':
+                sources = ["all"]
+                break
+            elif ans:
+                source_input = ans
+                continue
+            else:
+                continue
+        elif source_input == 'all':
+            sources = ["all"]
+            break
+        else:
+            raw_sources = [s.strip() for s in source_input.split(',')]
+            valid_selections = []
+            
+            for s in raw_sources:
+                if s in valid_sources:
+                    valid_selections.append(s)
+                else:
+                    print(f"\n[Notice] The source '{s}' is not currently registered in the core pipeline.")
+                    ans = input(f"[Wizard] Would you like me to initiate the New Source Discovery Protocol to check the terms and conditions (API rules, robots.txt) for '{s}' and guide you through the structural steps to add it? (y/n): ").strip().lower()
+                    if ans == 'y':
+                        print(f"\n{'='*50}\n NEW SOURCE DISCOVERY PROTOCOL: {s.upper()}\n{'='*50}")
+                        print(f"Phase 1: Compliance & Terms of Service")
+                        print(f"  - Check `https://{s}.com/robots.txt` for endpoint crawling permissions.")
+                        print(f"  - Review the official API documentation for {s.upper()} for rate limits.")
+                        print(f"  - Verify Authentication requirements (OAuth, Bearer Token, API Key).")
+                        print("\nPhase 2: Structural Implementation Template")
+                        print("  To integrate this source, create the following class inside `scripts/fetcher_engine.py` and register it in `get_fetcher()`:\n")
+                        print(f"class {s.capitalize()}Fetcher(BaseFetcher):")
+                        print(f"    def scout(self) -> dict:")
+                        print(f"        print(f\"[Scout] Validating parameters for {s.upper()}...\")")
+                        print(f"        return {{")
+                        print(f"            \"url\": f\"https://{s}.com/api/\",")
+                        print(f"            \"size_info\": \"Unknown (Dependent on runtime response)\"")
+                        print(f"        }}")
+                        print(f"\n    def extract(self) -> pd.DataFrame:")
+                        print(f"        print(f\"[Extract] Pulling raw payloads from {s.upper()}...\")")
+                        print(f"        import pandas as pd")
+                        print(f"        df = pd.DataFrame() # Implement actual requests loop here")
+                        print(f"        return df")
+                        print(f"{'='*50}")
+            
+            if valid_selections:
+                sources = valid_selections
+                break
+            else:
+                source_input = input("\n[Wizard] No valid sources configured. Please enter a valid source (or press Enter for Kaggle): ").strip().lower()
                 
-        topic_lower = topic.lower()
-        if source == "sec" and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
-            ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle? (proceed/switch): ").strip().lower()
-            if ans == "switch":
-                source = "kaggle"
-                print("\n[Wizard] Switched source to Kaggle.")
+    topic_lower = topic.lower()
+    if "sec" in sources and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
+        ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or drop 'sec'? (proceed/drop): ").strip().lower()
+        if ans == "drop":
+            sources.remove("sec")
+            if not sources:
+                sources = ["kaggle"]
+                print("\n[Wizard] List empty after dropping sec. Switched source to Kaggle.")
 
     print("\n4. Let's define the technical shape of the required data:")
     _ = input("  - Volume (Specific number of rows or columns needed?): ").strip()
@@ -583,7 +628,7 @@ def interactive_flow() -> tuple[str, str, str]:
     if not topic:
         topic = "finance"
     
-    return source, topic, os.path.join(os.getcwd(), "data_raw")
+    return sources, topic, os.path.join(os.getcwd(), "data_raw")
 
 
 def main() -> None:
@@ -599,35 +644,39 @@ def main() -> None:
     try:
         # Zero-args mode triggers the interactive onboarding flow
         if not args.source or not args.query:
-            source, query, outdir = interactive_flow()
+            sources, query, outdir = interactive_flow()
         else:
-            source, query, outdir = args.source, args.query, args.outdir
+            sources = [s.strip().lower() for s in args.source.split(',')]
+            query, outdir = args.query, args.outdir
 
         # Enforce Layer 2: Humanized Randomized Delays (simulating evasion tactics)
         delay = random.uniform(2, 5)
         print(f"[Engine] Imposing humanized delay of {delay:.2f} seconds to simulate human traffic...")
         time.sleep(delay)
         
-        if source == "all":
-            sources_to_run = ["kaggle", "openml"] # Best general purpose tabular sources
-            print(f"\n[Meta-Search] Executing multi-source extraction across: {sources_to_run}")
-            csv_paths = []
-            for s in sources_to_run:
-                try:
-                    fetcher = get_fetcher(s, query, outdir, config)
-                    csv_paths.append(fetcher.run())
-                except Exception as e:
-                    print(f"\n[Meta-Search] Source '{s}' failed or was bypassed: {e}\n")
-            if csv_paths:
-                print(f"\n[Engine] Meta-Search Complete. {len(csv_paths)} datasets extracted successfully.")
-                csv_path = csv_paths[0] # Default to first successful payload for Alchemy
+        csv_paths = []
+        for s in sources:
+            if s == "all":
+                sources_to_run = ["kaggle", "openml"]
             else:
-                print("\n[Engine] Meta-Search yielded no data. Aborting.")
-                sys.exit(1)
-        else:
-            fetcher = get_fetcher(source, query, outdir, config)
-            csv_path = fetcher.run()
-            print("[Engine] Extraction Complete. Pipeline exiting successfully.")
+                sources_to_run = [s]
+                
+            for target_source in sources_to_run:
+                try:
+                    fetcher = get_fetcher(target_source, query, outdir, config)
+                    path = fetcher.run()
+                    csv_paths.append(path)
+                except NotImplementedError as e:
+                    print(f"\n[Engine] Extraction for '{target_source}' failed: {e}\n")
+                except Exception as e:
+                    print(f"\n[Engine] Source '{target_source}' failed or was bypassed: {e}\n")
+                    
+        if not csv_paths:
+            print("\n[Engine] No datasets extracted successfully. Pipeline aborting.")
+            sys.exit(1)
+            
+        print(f"\n[Engine] Extraction Complete. {len(csv_paths)} datasets secured.")
+        csv_path = csv_paths[0] # Default to first successful payload for Alchemy
         
         print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
         alchemy_choice = input().strip().lower()
