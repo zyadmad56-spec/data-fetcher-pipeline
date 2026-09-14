@@ -2,5 +2,8 @@
     "KAGGLE_USERNAME": "",
     "KAGGLE_KEY": "",
     "SEC_API_KEY": "",
-    "FRED_API_KEY": ""
+    "FRED_API_KEY": "",
+    "GITHUB_TOKEN": "",
+    "COINGECKO_API_KEY": "",
+    "DATAGOV_API_KEY": ""
 }

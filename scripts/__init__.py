@@ -1,1 +1,1 @@
-# Marks scripts as a Python package
+# data-fetcher-pipeline scripts package marker

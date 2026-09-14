@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-fetcher-pipeline"
+version = "2.0.0"
+description = "Automated dataset retrieval pipeline for data professionals."
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Ziad Emad"}]
+
+dependencies = [
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+    "yfinance>=0.2.36",
+    "beautifulsoup4>=4.12.0",
+    "openml>=0.14.0",
+    "openpyxl>=3.0.0",
+    "kaggle>=1.5.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+parquet = ["pyarrow>=14.0.0"]
+
+[project.scripts]
+data-fetcher = "scripts.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scripts*"]
