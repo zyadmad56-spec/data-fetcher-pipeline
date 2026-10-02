@@ -10,7 +10,9 @@ Fetch datasets, review a sample, and save them with a Markdown profile and a rec
 
 ### Project video
 
-[Watch the project video](media/data_fetcher_promo_en.mp4). The guide below describes the current features and limits.
+https://github.com/user-attachments/assets/7e0bb809-6606-429c-b597-557ce4bbec78
+
+The guide below describes the current features and limits. [Download the original video](media/data_fetcher_promo_en.mp4).
 
 ## 1. High-Level Architecture & Value Proposition
 
