@@ -1,7 +1,9 @@
+import re
 from typing import Dict
 import pandas as pd
 from scripts.base import BaseFetcher
 from scripts.config import get_api_key
+from scripts.errors import DataFetchError
 from scripts.http_utils import request_with_retry
 
 class SECFetcher(BaseFetcher):
@@ -14,10 +16,15 @@ class SECFetcher(BaseFetcher):
         self.facts_url: str = ""
 
     def scout(self) -> Dict[str, str]:
-        self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide your SEC API Key or Email for User-Agent: ")
+        self.api_key = get_api_key("SEC_API_KEY", self.config, "Please provide a contact email for SEC User-Agent: ")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", self.api_key):
+            raise DataFetchError(
+                "SEC_API_KEY must contain a contact email for the SEC User-Agent.",
+                code="AUTH_INVALID",
+            )
         print("[Scout] SEC EDGAR credentials validated.")
         
-        ua = self.api_key if "@" in self.api_key else f"data-fetcher-pipeline/1.0 ({self.api_key})"
+        ua = f"data-fetcher-pipeline/2.0 ({self.api_key})"
         headers = {"User-Agent": ua}
         
         cik_url = "https://www.sec.gov/files/company_tickers.json"
@@ -52,7 +59,7 @@ class SECFetcher(BaseFetcher):
         if not self.facts_url:
             raise ValueError("Facts URL is not set. Run scout() first.")
             
-        ua = self.api_key if "@" in self.api_key else f"data-fetcher-pipeline/1.0 ({self.api_key})"
+        ua = f"data-fetcher-pipeline/2.0 ({self.api_key})"
         headers = {"User-Agent": ua}
         
         print("[Extract] Fetching company facts...")

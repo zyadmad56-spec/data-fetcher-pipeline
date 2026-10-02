@@ -78,23 +78,15 @@ def test_generic_fetcher_raises_actionable_error() -> None:
     assert "Supported sources:" in err_msg
     assert "openml" in err_msg
 
-def test_format_alchemy_convert_dispatcher() -> None:
+def test_format_alchemy_convert_dispatcher(tmp_path: Path) -> None:
     """Test format alchemy conversion dispatcher mocks."""
-    with patch.object(Path, 'exists', return_value=True):
-        with patch.object(FormatAlchemyEngine, 'xlsx_to_csv', return_value="out.csv") as mock_xlsx:
-            res = FormatAlchemyEngine.convert("test.xlsx", "csv")
-            assert res == "out.csv"
-            mock_xlsx.assert_called_once_with("test.xlsx", "test.csv")
-
-        with patch.object(FormatAlchemyEngine, 'json_to_csv', return_value="out.csv") as mock_json:
-            res = FormatAlchemyEngine.convert("test.json", "csv")
-            assert res == "out.csv"
-            mock_json.assert_called_once_with("test.json", "test.csv")
-
-        with patch.object(FormatAlchemyEngine, 'parquet_to_csv', return_value="out.csv") as mock_parquet:
-            res = FormatAlchemyEngine.convert("test.parquet", "csv")
-            assert res == "out.csv"
-            mock_parquet.assert_called_once_with("test.parquet", "test.csv")
+    for extension, method in (("xlsx", "xlsx_to_csv"), ("json", "json_to_csv"), ("parquet", "parquet_to_csv")):
+        source = tmp_path / f"test.{extension}"
+        source.write_text("fixture", encoding="utf-8")
+        target = tmp_path / "test.csv"
+        with patch.object(FormatAlchemyEngine, method, return_value=str(target)) as converter:
+            assert FormatAlchemyEngine.convert(str(source), "csv") == str(target)
+            converter.assert_called_once_with(str(source), str(target))
 
 def test_web_analyzer_report_generation() -> None:
     """Test custom scraper analysis logic."""
@@ -454,22 +446,17 @@ def test_generated_scraper_retry_never_returns_none(tmp_path: Path) -> None:
     report = AnalysisReport(url="https://test.com/data.csv", difficulty="easy", status_code=200)
     script_path = analyzer.generate_script(report)
 
-    content = Path(script_path).read_text(encoding="utf-8")
-    func_src = content[content.index("def _fetch_with_retry"):content.index("def run_extraction")]
+    import runpy
 
-    fake_requests = MagicMock()
+    fetch = runpy.run_path(script_path, run_name="generated_module")["_fetch_with_retry"]
     rate_limited = MagicMock(status_code=429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})
-    fake_requests.get.return_value = rate_limited
-    fake_time = MagicMock()
-    namespace = {"requests": fake_requests, "time": fake_time}
-    exec(func_src, namespace)
+    fetch.__globals__["_request_checked"] = lambda url, headers: rate_limited
+    with patch.object(fetch.__globals__["time"], "sleep") as sleep:
+        with pytest.raises(RuntimeError):
+            fetch("https://test.com/data.csv", {})
 
-    with pytest.raises(RuntimeError):
-        namespace["_fetch_with_retry"]("https://test.com/data.csv", {})
-
-    # HTTP-date Retry-After must fall back to a numeric exponential delay
-    assert fake_time.sleep.call_count == 2  # between attempts only, never after the last
-    for call in fake_time.sleep.call_args_list:
+    assert sleep.call_count == 2
+    for call in sleep.call_args_list:
         assert isinstance(call.args[0], (int, float))
 
 def test_kaggle_fetcher_uses_pathlib_exclusively() -> None:
@@ -723,12 +710,12 @@ def test_config_wizard_masks_secrets_and_restricts_permissions(tmp_path: Path) -
 def test_interactive_flow_rejects_empty_topic() -> None:
     """Empty topics are re-prompted, never silently defaulted to 'finance'."""
     from scripts.cli import interactive_flow
-    with patch("builtins.input", side_effect=["", "", "covid", "1", "kaggle"]) as mock_in:
-        source, topic, _ = interactive_flow()
-    assert topic == "covid"
-    assert source == "kaggle"
-    # 5 inputs: topic, two empty re-prompts, mode, source — the dead Cleaned/Raw prompt is gone
-    assert mock_in.call_count == 5
+    with patch("builtins.input", side_effect=["1", "kaggle", "", "", "covid", "owner/covid", "", "", ""]) as mock_in:
+        request = interactive_flow()
+    assert request.goal == "covid"
+    assert request.source == "kaggle"
+    assert request.query == "owner/covid"
+    assert mock_in.call_count == 9
 
 def test_multi_hop_conversion_cleans_temp_on_failure(tmp_path: Path) -> None:
     """Temp intermediates are removed even when a multi-hop conversion fails mid-way."""

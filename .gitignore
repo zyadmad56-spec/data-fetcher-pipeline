@@ -15,3 +15,6 @@ config.json
 **/manifest.jsonl
 *.mp4
 *.png
+
+.pytest_cache/
+!media/data_fetcher_promo_en.mp4

@@ -2,9 +2,9 @@ import math
 import time
 import logging
 import email.utils
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Optional, Dict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -39,6 +39,13 @@ def get_metrics() -> Dict[str, int]:
 def add_metrics_bytes(n: int) -> None:
     """Count streamed payload bytes (callers reading iter_content chunk by chunk)."""
     _METRICS["bytes"] += n
+
+
+def _public_error_url(url: str) -> str:
+    """Keep endpoint context while omitting URL credentials and query secrets."""
+    parts = urlsplit(url)
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 def _enforce_host_pacing(url: str) -> None:
     host = urlparse(url).netloc
@@ -166,13 +173,13 @@ def request_with_retry(
         status = last_response.status_code
         last_response.close()
         raise DataFetchError(
-            f"All {max_retries} retries exhausted for {url} with status {status}.",
+            f"All {max_retries} retries exhausted for {_public_error_url(url)} with status {status}.",
             code="PROVIDER_ERROR",
         )
     if last_error:
         raise DataFetchError(
-            f"All {max_retries} retries exhausted for {url}: {type(last_error).__name__}. "
+            f"All {max_retries} retries exhausted for {_public_error_url(url)}: {type(last_error).__name__}. "
             "Check network connectivity and retry.",
             code="NETWORK",
         ) from last_error
-    raise DataFetchError(f"All {max_retries} retries exhausted for {url}.", code="NETWORK")
+    raise DataFetchError(f"All {max_retries} retries exhausted for {_public_error_url(url)}.", code="NETWORK")

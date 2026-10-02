@@ -8,6 +8,7 @@ class WorldBankFetcher(BaseFetcher):
 
     def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
         super().__init__(query, outdir, config)
+        self.lightweight_preview = True
         self.indicator_id: str = self.query
         self.total_records: int = 0
 
@@ -61,11 +62,7 @@ class WorldBankFetcher(BaseFetcher):
                         })
                     df = pd.DataFrame(records)
                     if not df.empty:
-                        print("\n" + "="*50)
-                        print(" DATASET PREVIEW (First 5 Rows)")
-                        print("="*50)
-                        print(df.to_string())
-                        print("="*50 + "\n")
+                        self.show_preview(df)
         except (ValueError, KeyError, ConnectionError, IndexError) as exc:
             print(f"[Warning] Failed to generate World Bank dataset preview: {exc}")
 

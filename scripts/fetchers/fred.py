@@ -1,8 +1,9 @@
 import re
+import os
 from typing import Dict
+from urllib.parse import quote
 import pandas as pd
 from scripts.base import BaseFetcher
-from scripts.config import get_api_key
 from scripts.errors import DataFetchError
 from scripts.http_utils import request_with_retry
 
@@ -14,11 +15,10 @@ class FREDFetcher(BaseFetcher):
         self.api_key: str = ""
 
     def scout(self) -> Dict[str, str]:
-        self.api_key = get_api_key(
-            "FRED_API_KEY",
-            self.config,
-            "Please go to https://fred.stlouisfed.org/docs/api/api_key.html and paste your FRED API Key: "
-        )
+        self.api_key = self.config.get("FRED_API_KEY") or os.environ.get("FRED_API_KEY", "")
+        if not self.api_key:
+            self.download_url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={quote(self.query, safe='')}"
+            return {"url": self.download_url, "size_info": "Public FRED graph CSV history"}
         # FRED keys are 32-char lowercase alphanumeric — validate early so a
         # stale/placeholder key fails in seconds with recovery steps, not a cryptic API 400
         if not re.fullmatch(r"[a-z0-9]{32}", self.api_key):
@@ -39,7 +39,14 @@ class FREDFetcher(BaseFetcher):
     def extract(self) -> pd.DataFrame:
         print("[Extract] Interfacing with FRED API...")
         if not self.api_key:
-            raise ValueError("API key not set. Execute scout() first.")
+            df = self._consume_payload_csv()
+            if "observation_date" not in df or self.query not in df:
+                raise ValueError(f"FRED graph CSV has no observations for series '{self.query}'.")
+            df = df[["observation_date", self.query]].rename(
+                columns={"observation_date": "date", self.query: "value"}
+            )
+            df["value"] = pd.to_numeric(df["value"], errors="coerce")
+            return df
             
         url = f"https://api.stlouisfed.org/fred/series/observations?series_id={self.query}&api_key={self.api_key}&file_type=json"
         

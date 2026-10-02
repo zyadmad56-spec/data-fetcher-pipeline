@@ -2,6 +2,7 @@ import sqlite3
 import re
 import json
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -30,6 +31,12 @@ class FormatAlchemyEngine:
     def _safe_table_name(self) -> str:
         """Sanitize table name to prevent SQL injection and SQLite syntax errors."""
         return re.sub(r'[^a-zA-Z0-9_]', '_', self.dataset_name)
+
+    @staticmethod
+    def _temporary_csv_path(directory: Path) -> str:
+        descriptor, path = tempfile.mkstemp(prefix="dfp_", suffix=".csv", dir=directory)
+        os.close(descriptor)
+        return path
 
     def csv_to_sqlite(self) -> None:
         """Read CSV in chunks and ingest into SQLite database."""
@@ -292,8 +299,34 @@ class FormatAlchemyEngine:
         except OSError as exc:
             raise RuntimeError(f"Failed to write CSV output: {exc}") from exc
 
+    @staticmethod
+    def _write_json_records(df: pd.DataFrame, target_path: str) -> str:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix="dfp_", suffix=".json.tmp", dir=Path(target_path).parent
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write("[\n")
+                for index, row in enumerate(df.itertuples(index=False, name=None)):
+                    values = (None if pd.isna(value) else value for value in row)
+                    record = dict(zip(df.columns, values))
+                    output.write((",\n" if index else "") + json.dumps(record, ensure_ascii=False, allow_nan=False))
+                output.write("\n]\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return target_path
+
     @classmethod
-    def convert(cls, source_path: str, target_format: str) -> str:
+    def csv_to_json(cls, source_path: str, target_path: str) -> str:
+        df = pd.read_csv(source_path)
+        return cls._write_json_records(df, target_path)
+
+    @classmethod
+    def convert(cls, source_path: str, target_format: str, overwrite: bool = False) -> str:
         """Convert source file to target format. Returns output filepath."""
         path = Path(source_path)
         if not path.exists():
@@ -302,6 +335,17 @@ class FormatAlchemyEngine:
         target_format = target_format.lower().strip()
         source_ext = path.suffix.lower().strip(".")
         base_path = str(path.parent / path.stem)
+        target_ext = {
+            "excel": "xlsx", "xlsx": "xlsx", "sqlite": "db", "sql": "db", "db": "db",
+            "csv": "csv", "json": "json", "parquet": "parquet",
+        }.get(target_format)
+        if target_ext:
+            destination = Path(f"{base_path}.{target_ext}")
+            if destination != path and destination.exists() and not overwrite:
+                raise DataFetchError(
+                    f"Output already exists: {destination}. Pass --overwrite to replace it.",
+                    code="INVALID_OUTPUT",
+                )
         
         if target_format == "csv":
             out_path = f"{base_path}.csv"
@@ -324,12 +368,17 @@ class FormatAlchemyEngine:
                 # Direct CSV→Excel stream: no SQLite hop (keeps the 16,384-col
                 # ceiling reachable and doubles conversion speed)
                 engine = cls(source_path)
+                if Path(engine.excel_filepath).exists() and not overwrite:
+                    raise DataFetchError(
+                        f"Intermediate output already exists: {engine.excel_filepath}. Pass --overwrite to replace it.",
+                        code="INVALID_OUTPUT",
+                    )
                 engine.csv_to_excel_direct()
                 if engine.excel_filepath != out_path:
                     os.replace(engine.excel_filepath, out_path)
                 return out_path
             elif source_ext in ["parquet", "json", "db", "sqlite", "sqlite3"]:
-                temp_csv = f"{base_path}_temp.csv"
+                temp_csv = cls._temporary_csv_path(path.parent)
                 try:
                     to_csv = {
                         "parquet": cls.parquet_to_csv,
@@ -348,6 +397,11 @@ class FormatAlchemyEngine:
         elif target_format in ["sqlite", "sql", "db"]:
             if source_ext == "csv":
                 engine = cls(source_path)
+                if Path(engine.db_filepath).exists() and not overwrite:
+                    raise DataFetchError(
+                        f"Output already exists: {engine.db_filepath}. Pass --overwrite to replace it.",
+                        code="INVALID_OUTPUT",
+                    )
                 engine.csv_to_sqlite()
                 return engine.db_filepath
             else:
@@ -358,7 +412,7 @@ class FormatAlchemyEngine:
             if source_ext == "csv":
                 return cls.csv_to_parquet(source_path, out_path)
             elif source_ext in ["json", "db", "sqlite", "sqlite3"]:
-                temp_csv = f"{base_path}_temp.csv"
+                temp_csv = cls._temporary_csv_path(path.parent)
                 try:
                     to_csv = cls.json_to_csv if source_ext == "json" else cls.sqlite_to_csv
                     to_csv(source_path, temp_csv)
@@ -372,18 +426,14 @@ class FormatAlchemyEngine:
             out_path = f"{base_path}.json"
             if source_ext == "csv":
                 try:
-                    df = pd.read_csv(source_path)
-                    df.to_json(out_path, orient="records", indent=4)
-                    return out_path
+                    return cls.csv_to_json(source_path, out_path)
                 except OSError as exc:
                     raise RuntimeError(f"Conversion to JSON failed: {exc}") from exc
             elif source_ext in ["db", "sqlite", "sqlite3"]:
-                temp_csv = f"{base_path}_temp.csv"
+                temp_csv = cls._temporary_csv_path(path.parent)
                 try:
                     cls.sqlite_to_csv(source_path, temp_csv)
-                    df = pd.read_csv(temp_csv)
-                    df.to_json(out_path, orient="records", indent=4)
-                    return out_path
+                    return cls.csv_to_json(temp_csv, out_path)
                 except OSError as exc:
                     raise RuntimeError(f"Conversion to JSON failed: {exc}") from exc
                 finally:

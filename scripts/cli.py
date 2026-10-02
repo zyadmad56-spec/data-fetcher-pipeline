@@ -9,9 +9,8 @@ if __name__ == "__main__":
 
 import json
 import argparse
-import time
-import random
-from typing import Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Optional
 
 # Guaranteed startup envelope: if the engine itself fails to import (broken
 # dependency, corrupt install), the CLI must still answer in JSON with exit 3
@@ -53,7 +52,6 @@ def _fallback_code(exc: Exception) -> str:
 def _gc_orphan_dir(fetcher) -> None:
     """Remove the per-fetch directory when a failed run left it empty (no debris)."""
     try:
-        from scripts.base import provision_data_directory  # noqa: F401 (platforms list lives in base)
         outdir = getattr(fetcher, "outdir", None)
         if not outdir:
             return
@@ -77,6 +75,9 @@ def _fetch_envelope_meta(fetcher) -> dict:
 
     warnings_raw = getattr(fetcher, "completeness_warnings", [])
     warnings_list = [str(w) for w in warnings_raw] if isinstance(warnings_raw, list) else []
+    artifact_warnings = getattr(fetcher, 'artifact_warnings', [])
+    if isinstance(artifact_warnings, list):
+        warnings_list.extend(str(w) for w in artifact_warnings)
     complete_raw = getattr(fetcher, "complete", True)
     complete = complete_raw if isinstance(complete_raw, bool) else True
 
@@ -88,77 +89,31 @@ def _fetch_envelope_meta(fetcher) -> dict:
         "sha256": typed("last_sha256", ""),
         "bytes": typed("last_bytes", 0),
         "description_path": typed("last_description_path", ""),
+        "manifest_path": typed("last_manifest_path", ""),
+        "original_path": typed("last_original_path", ""),
+        "original_sha256": typed("last_original_sha256", ""),
+        "original_bytes": typed("last_original_bytes", 0),
         "complete": complete,
         "warnings": warnings_list,
         "truncation": trunc_raw if isinstance(trunc_raw, dict) else None,
     }
 
-def interactive_flow() -> Tuple[str, str, str]:
-    """Interactive wizard to guide parameters when run in zero-args mode."""
-    print("==========================================")
-    print("Welcome to the Data Fetcher Pipeline")
-    print("==========================================\n")
+def interactive_flow(outdir=None):
+    from scripts.workflow import interview
+    return interview(outdir)
 
-    topic = input("1. What specific topic or domain do you need datasets for? ").strip()
-    while not topic:
-        print("[Error] Topic cannot be empty — enter a topic (e.g. 'covid', 'housing').")
-        topic = input("Topic: ").strip()
 
-    print("\n2. Please choose a fetching mode:")
-    print("  1. Standard Mode: Choose a specific source from our supported list.")
-    print("  2. Meta-Search (Coming Soon): Search ALL supported sources.")
-    print("  3. Advanced Mode (Coming Soon): Provide an external/custom website.")
+def run_conversion(target_format: str, filepath: str, overwrite: bool = False) -> str:
+    from scripts.composition import convert_file
+    return convert_file(target_format, filepath, overwrite)
 
-    source_choice = input("Enter your choice (1-3): ").strip()
+@dataclass
+class _RunState:
+    fetcher: object = None
+    warnings: list = field(default_factory=list)
 
-    valid_sources = list_sources()
-    source = "openml"
 
-    if source_choice == '1':
-        print(f"\nSupported Sources: {valid_sources}")
-        source = input("Enter the specific source: ").strip().lower()
-        while source not in valid_sources:
-            print(f"[Error] '{source}' is not a supported source.")
-            source = input(f"Please choose from {valid_sources}: ").strip().lower()
-
-        topic_lower = topic.lower()
-        if source == "sec" and any(word in topic_lower for word in ["movie", "game", "sports", "anime"]):
-            ans = input(f"\nWarning: SEC is for corporate financial filings, which is logically unrelated to '{topic}'. Proceed anyway, or switch to Kaggle/OpenML? (proceed/switch): ").strip().lower()
-            if ans == "switch":
-                source = input("Enter new source (e.g. kaggle): ").strip().lower()
-                while source not in valid_sources:
-                    print(f"[Error] '{source}' is not a supported source.")
-                    source = input(f"Please choose from {valid_sources}: ").strip().lower()
-    else:
-        print(f"\n[Notice] Advanced routing (Choices {source_choice}) is currently in development.")
-        print("Falling back to standard source selection.")
-        print(f"\nSupported Sources: {valid_sources}")
-        source = input("Enter the specific source: ").strip().lower()
-        while source not in valid_sources:
-            print(f"[Error] '{source}' is not a supported source.")
-            source = input(f"Please choose from {valid_sources}: ").strip().lower()
-
-    print("\n[Wizard] All parameters collected successfully. Initializing Fetcher Engine...\n")
-
-    return source, topic, str(Path.cwd() / "data_raw")
-
-def run_conversion(target_format: str, filepath: str) -> str:
-    """Execute standalone format conversion; returns the output artifact path."""
-    from scripts.format_alchemy import FormatAlchemyEngine
-    output = FormatAlchemyEngine.convert(filepath, target_format)
-    print(f"[FormatAlchemy] Converted to: {output}")
-    return output
-
-def main() -> None:
-    if _startup_error is not None:
-        print(json.dumps({
-            "status": "error",
-            "code": "STARTUP_FAILURE",
-            "message": f"Engine failed to initialize: {_startup_error}. "
-                       "Reinstall dependencies from pyproject.toml.",
-        }))
-        sys.exit(3)
-
+def _parse_arguments():
     parser = argparse.ArgumentParser(description="Data Fetcher Background Engine")
     parser.add_argument("--source", required=False, help="Target data platform (e.g., yfinance, fred, airbnb)")
     parser.add_argument("--query", required=False, help="Topic, ticker symbol, or series ID")
@@ -166,277 +121,273 @@ def main() -> None:
 
     parser.add_argument("--non-interactive", action="store_true", help="Run without user input prompt blocks")
     parser.add_argument("--yes", action="store_true", help="Auto-approve pre-flight data downloads")
-    parser.add_argument("--rows", type=int, default=0, help="Fetch only the first N rows (provider-pushed where supported)")
+    parser.add_argument("--rows", type=int, default=0, help="Save only the first N rows (transfer savings depend on provider)")
+    parser.add_argument("--preview-only", action="store_true", help="Return five sample rows; do not save dataset")
+    parser.add_argument("--analyze-only", action="store_true", help="Assess custom URL without extraction")
+    parser.add_argument("--save-source", metavar="NAME", help="Register a custom source after successful fetch")
+    parser.add_argument("--defer-source-choice", action="store_true", help="Keep a pending custom extractor while the agent asks whether to register it")
+    parser.add_argument("--keep-source", metavar="ID", help="Register a pending extractor using --save-source NAME; no new download")
+    parser.add_argument("--discard-source", metavar="ID", help="Discard a pending extractor; preserve downloaded datasets")
+    parser.add_argument("--columns", default="", help="Required column names, comma separated; project exact names")
+    parser.add_argument("--table", type=int, help="Zero-based HTML table index for custom extraction")
+    parser.add_argument("--output-format", default="csv", choices=['csv', 'json', 'excel', 'xlsx', 'parquet', 'sqlite', 'db'])
+    parser.add_argument("--goal", default="", help="Human-readable request; not an automatic content filter")
     parser.add_argument("--list-sources", action="store_true", help="Print supported data sources and exit")
     parser.add_argument("--json-output", action="store_true", help="Provide machine-readable JSON output")
     parser.add_argument("--convert", nargs=2, metavar=("FORMAT", "FILE"), help="Convert FILE to FORMAT")
+    parser.add_argument("--overwrite", action="store_true", help="Allow --convert to replace an existing output file")
 
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    # Machine mode: stdout is reserved for the JSON envelope; every progress or
-    # diagnostic print from any module is redirected to stderr
-    real_stdout = sys.stdout
+
+def _source_choice(args):
+    from scripts.composition import finish_pending_source as finish_source_choice
+    if (args.keep_source and args.discard_source) or (args.keep_source and not args.save_source):
+        raise DataFetchError('Choose --keep-source ID --save-source NAME or --discard-source ID.', code='ARG_MISSING')
+    key = finish_source_choice(args.keep_source or args.discard_source,
+                               args.save_source if args.keep_source else None)
+    return {'status': 'success', 'registered_source': key,
+            'source_choice': 'kept' if key else 'discarded'}
+
+
+def _source_listing():
+    from scripts.factory import source_info
+    catalog = source_info()
+    return {'status': 'success', 'sources': [
+        {'key': key, 'platform': catalog[key].get('platform', key.title()),
+         'query_format': catalog[key].get('query_format', 'free text'),
+         'example': catalog[key].get('example', ''), 'auth': catalog[key].get('auth', 'none')}
+        for key in list_sources()
+    ]}
+
+
+def _fetch_config(args):
+    config = setup_wizard(non_interactive=True)
+    config['non_interactive'] = args.non_interactive or args.json_output or args.yes
+    if args.json_output and not (args.yes or args.non_interactive):
+        raise DataFetchError(
+            '--json-output requires --yes or --non-interactive: interactive '
+            'pre-flight prompts cannot be served in JSON mode.', code='INTERACTIVE_REQUIRED')
+    return config
+
+
+def _resolve_request(args):
+    if args.source and args.query:
+        return
+    if args.non_interactive or args.json_output:
+        raise DataFetchError('Source and Query arguments are required in non-interactive mode.',
+                             code='ARG_MISSING')
+    request = interactive_flow(args.outdir)
+    args.source, args.query, args.outdir = request.source, request.query, request.outdir
+    args.rows, args.output_format = request.rows, request.output_format
+    args.goal, args.columns = request.goal, ','.join(request.columns)
+
+
+def _validate_fetch_options(args):
+    if args.save_source and (args.source.lower() != 'custom' or args.preview_only or args.analyze_only):
+        raise DataFetchError('--save-source needs a successful full custom fetch.', code='ARG_MISSING')
+    if args.defer_source_choice and (args.source.lower() != 'custom' or args.preview_only
+                                    or args.analyze_only or args.save_source):
+        raise DataFetchError('--defer-source-choice needs a full custom fetch without --save-source.', code='ARG_MISSING')
+    if args.table is not None and args.table < 0:
+        raise DataFetchError('--table must be a non-negative index.', code='ARG_MISSING')
+    if args.preview_only and args.analyze_only:
+        raise DataFetchError('Choose preview or analysis, not both.', code='ARG_MISSING')
+    if args.analyze_only and args.source.lower() != 'custom':
+        raise DataFetchError('--analyze-only requires --source custom.', code='ARG_MISSING')
+
+
+def _configure_fetcher(fetcher, args):
+    fetcher.auto_approve = args.yes or args.non_interactive
+    if args.rows > 0:
+        fetcher.row_limit = args.rows
+    fetcher.preview_only = args.preview_only
+    fetcher.required_columns = list(dict.fromkeys(c.strip() for c in args.columns.split(',') if c.strip()))
+    fetcher.requested_goal = args.goal
+    fetcher.table_index = args.table
+
+
+def _preview_envelope(fetcher, source):
+    frame = fetcher.preview_frame
+    return {'status': 'success', 'mode': 'preview', 'source': source,
+            'source_url': fetcher.dataset_url,
+            'sample': json.loads(frame.iloc[:, :30].to_json(orient='records', date_format='iso')),
+            'columns': [str(c) for c in frame.columns], 'rows': len(frame),
+            'transfer_scope': fetcher.transfer_scope, 'output_path': None,
+            'warnings': _fetch_envelope_meta(fetcher)['warnings']}
+
+
+def _retain_custom_source(fetcher, args):
+    from scripts.composition import retain_custom_source
+    return retain_custom_source(fetcher, args)
+
+
+def _network_envelope(source, metrics):
+    custom = source.lower() == 'custom' or source.lower().startswith('custom_')
+    sdk = source.lower() in {'yahoo', 'yfinance', 'openml', 'kaggle'}
+    scope = ('unavailable: generated extractor uses its own HTTP client' if custom else
+             'unavailable: provider SDK uses its own HTTP client' if sdk else
+             'instrumented HTTP client only')
+    return {'provider_requests': None if sdk or custom else metrics['requests'],
+            'retries': None if sdk or custom else metrics['retries'],
+            'bytes_transferred': None if sdk or custom else metrics['bytes'],
+            'metrics_scope': scope}
+
+
+def _saved_envelope(fetcher, args, csv_path):
+    from datetime import datetime, timezone
+    rows = getattr(fetcher, 'rows_count', 0)
+    columns = getattr(fetcher, 'cols_count', 0)
+    envelope = {'status': 'success', 'source': args.source, 'query': args.query,
+                'requested_goal': args.goal, 'output_path': str(Path(csv_path).resolve()),
+                'rows': rows if isinstance(rows, int) else 0,
+                'columns': columns if isinstance(columns, int) else 0,
+                'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    envelope.update(_fetch_envelope_meta(fetcher))
+    for key in ('description_path', 'manifest_path', 'original_path'):
+        if envelope[key]:
+            envelope[key] = str(Path(envelope[key]).resolve())
+    envelope['original_path'] = envelope['original_path'] or None
+    return envelope
+
+
+def _prepare_fetch(args):
+    from scripts.base import provision_data_directory
+    config = _fetch_config(args)
+    _resolve_request(args)
+    if args.rows < 0:
+        raise DataFetchError(f'--rows must be a non-negative integer (got {args.rows}).', code='ARG_MISSING')
+    source_key = {'yfinance': 'yahoo'}.get(args.source.lower(), args.source.lower())
+    provision_data_directory(args.outdir, source_key=source_key)
+    _validate_fetch_options(args)
+    return config
+
+
+def _analyze_source(args):
+    from scripts.web_analyzer import WebAnalyzer
+    from dataclasses import asdict
+    report = WebAnalyzer(args.query, str(Path(args.outdir) / 'custom')).analyze()
+    return {'status': 'success', 'mode': 'analysis', **asdict(report)}
+
+
+def _fetch_dataset(args, state):
+    from scripts.http_utils import reset_metrics, get_metrics
+    config = _prepare_fetch(args)
+    if args.analyze_only:
+        return _analyze_source(args)
+    state.fetcher = get_fetcher(args.source, args.query, args.outdir, config)
+    _configure_fetcher(state.fetcher, args)
+    reset_metrics()
+    csv_path = state.fetcher.run()
+    metrics = get_metrics()
+    if args.preview_only:
+        return _preview_envelope(state.fetcher, args.source)
+    from scripts.application.complete import complete_dataset
+    converted, registered, pending = complete_dataset(
+        csv_path, args.output_format, run_conversion,
+        lambda: _retain_custom_source(state.fetcher, args))
+    envelope = _saved_envelope(state.fetcher, args, csv_path)
+    envelope.update(_network_envelope(args.source, metrics))
+    envelope.update(converted_file=converted, registered_source=registered, pending_source_id=pending)
+    return envelope
+
+
+def _execute(args, state):
+    if args.keep_source or args.discard_source:
+        return _source_choice(args)
+    if args.list_sources:
+        return _source_listing()
+    if args.convert:
+        target_format, filepath = args.convert
+        output = run_conversion(target_format, filepath, overwrite=args.overwrite)
+        return {'status': 'success', 'converted_file': output, 'source_file': filepath}
+    return _fetch_dataset(args, state)
+
+
+def _failure_envelope(exc):
+    if isinstance(exc, DataFetchError):
+        return {'status': 'error', 'code': exc.code, 'message': str(exc)}, exc.exit_code
+    if isinstance(exc, (KeyboardInterrupt, EOFError)):
+        code = 'ABORTED' if isinstance(exc, KeyboardInterrupt) else 'INTERACTIVE_REQUIRED'
+        return {'status': 'error', 'code': code, 'message':
+                'Interactive input required but unavailable. Add --yes flag for non-interactive mode.'}, (
+                    130 if isinstance(exc, KeyboardInterrupt) else 1)
+    if isinstance(exc, (ValueError, RuntimeError, ImportError, OSError)):
+        return {'status': 'error', 'code': _fallback_code(exc), 'message': str(exc)}, 1
+    return {'status': 'error', 'code': 'INTERNAL',
+            'message': f'{type(exc).__name__}: {exc}'}, 1
+
+
+def _cleanup_fetcher(fetcher):
+    cleanup = getattr(fetcher, 'cleanup', None)
+    if not callable(cleanup):
+        return []
+    try:
+        cleanup()
+        return []
+    except Exception as exc:
+        # A provider cleanup hook may raise any library exception. Keep the
+        # primary fetch result and disclose the resource failure to the caller.
+        return [f'Temporary extractor cleanup failed ({type(exc).__name__}): {exc}']
+
+
+def _print_sources(sources, stdout):
+    print('\nSupported Data Sources:\n' + '-' * 55, file=stdout)
+    print(f"{'CLI Key':<15} | {'Platform / Title':<35}\n" + '-' * 55, file=stdout)
+    for source in sources:
+        print(f"{source['key']:<15} | {source['platform']:<35}", file=stdout)
+    print('-' * 55, file=stdout)
+
+
+def _print_response(envelope, args, stdout):
+    if args.json_output:
+        print(json.dumps(envelope), file=stdout)
+    elif envelope['status'] == 'error':
+        print('\n[Error] ' + envelope['message'], file=stdout)
+    elif args.keep_source or args.discard_source:
+        print(str(envelope), file=stdout)
+    elif args.list_sources:
+        _print_sources(envelope['sources'], stdout)
+    elif envelope.get('mode') == 'analysis':
+        print(json.dumps({k: v for k, v in envelope.items() if k not in ('status', 'mode')},
+                         indent=2), file=stdout)
+        return
+    elif not args.convert and not args.preview_only:
+        print('[Engine] Extraction Complete. Pipeline exiting successfully.', file=stdout)
+    if not args.json_output:
+        for warning in envelope.get('warnings', []):
+            print('[Warning] ' + warning, file=stdout)
+
+
+def main() -> None:
+    if _startup_error is not None:
+        print(json.dumps({'status': 'error', 'code': 'STARTUP_FAILURE',
+                          'message': f'Engine failed to initialize: {_startup_error}. '
+                                     'Reinstall dependencies from pyproject.toml.'}))
+        sys.exit(3)
+    args = _parse_arguments()
+    state = _RunState()
+    real_stdout, exit_code = sys.stdout, 0
     if args.json_output:
         sys.stdout = sys.stderr
     try:
-        if args.list_sources:
-            sources = list_sources()
-            if args.json_output:
-                from scripts.factory import SOURCE_INFO
-                print(json.dumps({
-                    "status": "success",
-                    "sources": [
-                        {
-                            "key": s,
-                            "platform": SOURCE_INFO.get(s, {}).get("platform", s.title()),
-                            "query_format": SOURCE_INFO.get(s, {}).get("query_format", "free text"),
-                            "example": SOURCE_INFO.get(s, {}).get("example", ""),
-                            "auth": SOURCE_INFO.get(s, {}).get("auth", "none"),
-                        }
-                        for s in sources
-                    ],
-                }), file=real_stdout)
-            else:
-                titles = {
-                    "airbnb": "Inside Airbnb",
-                    "datagov": "Data.gov CKAN API",
-                    "eurostat": "Eurostat Bulk TSV Data",
-                    "fred": "Federal Reserve Economic Data (FRED)",
-                    "github": "GitHub Code Search API",
-                    "kaggle": "Kaggle Datasets API",
-                    "openml": "OpenML Machine Learning Repository",
-                    "sec": "SEC EDGAR XBRL Facts",
-                    "worldbank": "World Bank Indicators API",
-                    "coingecko": "CoinGecko Crypto Markets",
-                    "yahoo": "Yahoo Finance (Alias)",
-                    "yfinance": "Yahoo Finance",
-                }
-                print("\nSupported Data Sources:")
-                print("-" * 55)
-                print(f"{'CLI Key':<15} | {'Platform / Title':<35}")
-                print("-" * 55)
-                for s in sources:
-                    title = titles.get(s, s.title())
-                    print(f"{s:<15} | {title:<35}")
-                print("-" * 55)
-            sys.exit(0)
-
-        if args.convert:
-            target_format, file_path = args.convert[0], args.convert[1]
-            try:
-                output_artifact = run_conversion(target_format, file_path)
-                if args.json_output:
-                    print(json.dumps({
-                        "status": "success",
-                        "converted_file": output_artifact,
-                        "source_file": file_path,
-                    }), file=real_stdout)
-                sys.exit(0)
-            except (ValueError, RuntimeError, ImportError, FileNotFoundError, OSError) as e:
-                if args.json_output:
-                    code = e.code if isinstance(e, DataFetchError) else _fallback_code(e)
-                    print(json.dumps({"status": "error", "code": code, "message": str(e)}), file=real_stdout)
-                else:
-                    print(f"[Error] Conversion failed: {e}")
-                sys.exit(1)
-            except Exception as e:
-                # Third-party converters raise anything (zipfile.BadZipFile,
-                # pyarrow errors) — the JSON envelope is guaranteed here too
-                if args.json_output:
-                    print(json.dumps({"status": "error", "code": "INTERNAL", "message": f"{type(e).__name__}: {e}"}), file=real_stdout)
-                else:
-                    print(f"[Error] Conversion failed unexpectedly ({type(e).__name__}): {e}")
-                sys.exit(1)
-
-        non_interactive = args.non_interactive
-        fetcher = None  # for orphan-dir GC on failure paths
-
         try:
-            # Guarded zone: from wizard config onward every failure lands in the
-            # except chain below — the JSON envelope is guaranteed unconditionally
-            # JSON mode is non-interactive by definition: the wizard must never
-            # prompt (getpass would hang a piped/stdin-less process)
-            config = setup_wizard(non_interactive=non_interactive or args.json_output)
-            # Note: 'non_interactive' is a runtime flag injected for backward compatibility, it is not persisted.
-            config["non_interactive"] = non_interactive or args.json_output
-
-            # JSON mode must never reach an interactive prompt: pre-flight input would
-            # EOF and double-envelope the stream. Demand an explicit non-interactive flag.
-            if args.json_output and not (args.yes or non_interactive):
-                raise DataFetchError(
-                    "--json-output requires --yes or --non-interactive: interactive "
-                    "pre-flight prompts cannot be served in JSON mode.",
-                    code="INTERACTIVE_REQUIRED",
-                )
-
-            if not args.source or not args.query:
-                # JSON mode never reaches the interactive wizard — a piped-stdin
-                # agent must not hang on prompts or fire live requests silently
-                if non_interactive or args.json_output:
-                    raise DataFetchError(
-                        "Source and Query arguments are required in non-interactive mode.",
-                        code="ARG_MISSING",
-                    )
-                source, query, outdir = interactive_flow()
-            else:
-                source, query, outdir = args.source, args.query, args.outdir
-
-            if args.rows < 0:
-                raise DataFetchError(
-                    f"--rows must be a non-negative integer (got {args.rows}).",
-                    code="ARG_MISSING",
-                )
-
-            # Provision only what this run touches — discovery/conversion stay side-effect free
-            from scripts.base import provision_data_directory
-            provision_data_directory(outdir, source_key={"yfinance": "yahoo"}.get(source.lower(), source.lower()))
-
-            if not args.json_output and not args.yes and not args.non_interactive:
-                delay = random.uniform(2, 5)
-                print(f"[Engine] Imposing humanized delay of {delay:.2f} seconds to simulate human traffic...")
-                time.sleep(delay)
-
-            if source.lower() == "custom":
-                from scripts.web_analyzer import WebAnalyzer
-                # Keep the layout convention: everything a source produces lives under <outdir>/<source>/
-                analyzer = WebAnalyzer(query, str(Path(outdir) / "custom"))
-                report = analyzer.analyze()
-                script_path = analyzer.generate_script(report)
-
-                if args.json_output:
-                    print(json.dumps({
-                        "status": "success",
-                        "url": report.url,
-                        "difficulty": report.difficulty,
-                        "status_code": report.status_code,
-                        "content_type": report.content_type,
-                        "content_length": report.content_length,
-                        "robots_allowed": report.robots_allowed,
-                        "cloudflare_detected": report.cloudflare_detected,
-                        "captcha_detected": report.captcha_detected,
-                        "table_count": report.table_count,
-                        "warnings": report.warnings,
-                        "generated_script": script_path
-                    }), file=real_stdout)
-                    sys.exit(0)
-
-                print("\n" + "="*50)
-                print(" WEB SCRAPING ASSESSMENT REPORT")
-                print("="*50)
-                print(f"Target URL: {report.url}")
-                print(f"Status Code: {report.status_code}")
-                print(f"Content Type: {report.content_type}")
-                print(f"Estimated Size: {report.content_length} bytes")
-                print(f"Robots.txt Allowed: {report.robots_allowed}")
-                print(f"Cloudflare Detected: {report.cloudflare_detected}")
-                print(f"CAPTCHA Detected: {report.captcha_detected}")
-                print(f"HTML Table Count: {report.table_count}")
-                print(f"Difficulty Level: {report.difficulty.upper()}")
-                print("-" * 50)
-                if report.warnings:
-                    print("Warnings:")
-                    for warn in report.warnings:
-                        print(f"  - {warn}")
-                print(f"\nGenerated scraping script saved to: {script_path}")
-                print("="*50 + "\n")
-
-                if report.difficulty in ["easy", "medium"] and not non_interactive and not args.json_output:
-                    ans = input("Would you like to execute the generated scraper script right now? (y/n): ").strip().lower()
-                    if ans == 'y':
-                        print("[Engine] Executing generated scraper script...")
-                        import subprocess
-                        subprocess.run([sys.executable, script_path], check=False)
-                sys.exit(0)
-
-            # JSON-mode demand moved above (wizard must never prompt); fetcher section follows
-            fetcher = get_fetcher(source, query, outdir, config)
-            if args.yes or non_interactive:
-                fetcher.auto_approve = True
-            if args.rows > 0:
-                fetcher.row_limit = args.rows
-
-            from scripts.http_utils import reset_metrics, get_metrics
-            reset_metrics()
-            csv_path = fetcher.run()
-            metrics = get_metrics()
-
-            # Retrieve rows and columns metadata directly from the fetcher to avoid redundant I/O
-            rows = getattr(fetcher, "rows_count", 0)
-            rows = rows if isinstance(rows, int) else 0
-            cols = getattr(fetcher, "cols_count", 0)
-            cols = cols if isinstance(cols, int) else 0
-
-            if args.json_output:
-                from datetime import datetime, timezone
-                envelope = {
-                    "status": "success",
-                    "source": source,
-                    "query": query,
-                    "output_path": str(Path(csv_path).resolve()),
-                    "rows": rows,
-                    "columns": cols,
-                    "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "provider_requests": metrics["requests"],
-                    "retries": metrics["retries"],
-                    "bytes_transferred": metrics["bytes"],
-                }
-                envelope.update(_fetch_envelope_meta(fetcher))
-                envelope["description_path"] = str(Path(envelope["description_path"]).resolve()) if envelope["description_path"] else ""
-                print(json.dumps(envelope), file=real_stdout)
-            else:
-                print("[Engine] Extraction Complete. Pipeline exiting successfully.")
-
-            # Only a human in an interactive session gets the optional FormatAlchemy prompt;
-            # --yes auto-approves downloads but must never block on input()
-            if not non_interactive and not args.yes and not args.json_output:
-                print("\n[Prompt] Data fetched successfully. Would you like to initialize the Format Alchemy engine to convert this dataset to SQL and Excel? (y/n)")
-                alchemy_choice = input().strip().lower()
-                if alchemy_choice == 'y':
-                    from scripts.format_alchemy import run_alchemy
-                    run_alchemy(csv_path)
-
-        except DataFetchError as e:
-            _gc_orphan_dir(fetcher)
-            if args.json_output:
-                print(json.dumps({"status": "error", "code": e.code, "message": str(e)}), file=real_stdout)
-            else:
-                print(f"\n[Error] {e}")
-            sys.exit(e.exit_code)
-        except (ValueError, RuntimeError, ImportError) as e:
-            _gc_orphan_dir(fetcher)
-            if args.json_output:
-                print(json.dumps({"status": "error", "code": _fallback_code(e), "message": str(e)}), file=real_stdout)
-            else:
-                print(f"\n[Error] {e}")
-            sys.exit(1)
-        except OSError as e:
-            # Filesystem failures (e.g. --outdir is an existing file) get precise
-            # codes too instead of collapsing into INTERNAL
-            _gc_orphan_dir(fetcher)
-            if args.json_output:
-                print(json.dumps({"status": "error", "code": _fallback_code(e), "message": str(e)}), file=real_stdout)
-            else:
-                print(f"\n[Error] {e}")
-            sys.exit(1)
-        except (KeyboardInterrupt, EOFError):
-            _gc_orphan_dir(fetcher)
-            if args.json_output:
-                code = "ABORTED" if isinstance(sys.exc_info()[1], KeyboardInterrupt) else "INTERACTIVE_REQUIRED"
-                print(json.dumps({"status": "error", "code": code, "message": "Interactive input required but unavailable. Add --yes flag for non-interactive mode."}), file=real_stdout)
-            else:
-                print("\n[Engine] Execution aborted by user.")
-            sys.exit(130 if isinstance(sys.exc_info()[1], KeyboardInterrupt) else 1)
-        except Exception as e:
-            # Third-party libraries can raise anything (e.g. requests.ConnectionError
-            # from the openml client) — never surface a raw traceback to an agent
-            _gc_orphan_dir(fetcher)
-            if args.json_output:
-                print(json.dumps({"status": "error", "code": "INTERNAL", "message": f"{type(e).__name__}: {e}"}), file=real_stdout)
-            else:
-                print(f"\n[Error] Unexpected failure ({type(e).__name__}): {e}")
-            sys.exit(1)
+            envelope = _execute(args, state)
+        except (Exception, KeyboardInterrupt) as exc:
+            envelope, exit_code = _failure_envelope(exc)
     finally:
-        sys.stdout = real_stdout
+        try:
+            state.warnings.extend(_cleanup_fetcher(state.fetcher))
+            if exit_code:
+                _gc_orphan_dir(state.fetcher)
+        finally:
+            sys.stdout = real_stdout
+    if state.warnings:
+        envelope.setdefault('warnings', []).extend(state.warnings)
+    _print_response(envelope, args, real_stdout)
+    if exit_code or args.list_sources or args.convert:
+        sys.exit(exit_code)
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

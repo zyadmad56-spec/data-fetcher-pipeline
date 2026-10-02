@@ -8,7 +8,6 @@ import urllib.robotparser
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, field
 from typing import Dict, List
-import pandas as pd
 from bs4 import BeautifulSoup
 from scripts.errors import DataFetchError
 from scripts.http_utils import request_with_retry
@@ -91,8 +90,8 @@ class WebAnalyzer:
         robots.txt is fetched through the SSRF-guarded, timeout-bounded client
         with redirects OFF — urllib's auto-redirect would bypass validation and
         could be abused to probe internal addresses. Any failure to RETRIEVE
-        robots.txt falls back to the permissive default (fetch allowed); an
-        explicitly retrieved policy is parsed and enforced.
+        A missing policy (404) permits access; unavailable or redirected
+        policies block analysis until they can be checked.
         """
         parsed = urlparse(self.url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -106,16 +105,16 @@ class WebAnalyzer:
                 allow_redirects=False,
             )
             response.close()
+            if response.status_code == 404:
+                return True
             if response.status_code != 200:
-                return True  # no retrievable policy → permissive default
+                return False
             lines = response.text.splitlines()
             rp.parse(lines)
-            return rp.can_fetch("data-fetcher-pipeline", self.url) or rp.can_fetch("*", self.url)
-        except (ValueError, OSError) as exc:
-            # Blocked SSRF target or network failure: permissive default keeps
-            # behavior identical to an unreachable robots.txt
-            logger.debug("robots.txt fetch failed (%s); defaulting to allowed.", exc)
-            return True
+            return rp.can_fetch("data-fetcher-pipeline", self.url)
+        except (ValueError, OSError, DataFetchError) as exc:
+            logger.warning("robots.txt could not be verified: %s", exc)
+            return False
 
     def analyze(self) -> AnalysisReport:
         """Perform request and evaluate scraping difficulty of target URL."""
@@ -133,23 +132,34 @@ class WebAnalyzer:
 
         # Perform request first to check metadata
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "data-fetcher-pipeline/2.0"
         }
 
         url = self.url
         try:
             # Follow redirects manually so every hop passes the SSRF guard
             for _ in range(4):
-                response = request_with_retry(url, headers=headers, allow_redirects=False)
+                response = request_with_retry(url, headers=headers, allow_redirects=False, stream=True)
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location", "")
                     if not location:
                         break
+                    response.close()
                     url = urljoin(url, location)
                     validate_public_url(url)
                     report.warnings.append(f"Redirected to {url}")
+                    redirected = WebAnalyzer(url, self.output_dir)
+                    if not redirected._check_robots_txt():
+                        report.robots_allowed = False
+                        report.difficulty = 'blocked'
+                        report.warnings.append('Redirect target robots policy disallows or cannot verify access.')
+                        return report
                     continue
                 break
+            else:
+                report.difficulty = 'blocked'
+                report.warnings.append('Too many redirects; target not fetched.')
+                return report
         except (ConnectionError, DataFetchError) as exc:
             # request_with_retry raises coded DataFetchError on exhaustion —
             # report it as a blocked target instead of crashing the analysis
@@ -160,6 +170,11 @@ class WebAnalyzer:
 
         report.status_code = response.status_code
         report.content_type = response.headers.get("Content-Type", "").lower()
+        if response.status_code >= 400:
+            report.difficulty = 'blocked'
+            report.warnings.append(f'Provider refused access (HTTP {response.status_code}).')
+            response.close()
+            return report
         
         try:
             report.content_length = int(response.headers.get("Content-Length", "0"))
@@ -190,14 +205,25 @@ class WebAnalyzer:
 
         if "text/csv" in report.content_type or "application/json" in report.content_type or is_direct_file:
             report.difficulty = "easy"
+            response.close()
             return report
 
         # HTML parsing
         if "text/html" in report.content_type:
-            soup = BeautifulSoup(response.text, "html.parser")
+            preview = bytearray()
+            try:
+                for chunk in response.iter_content(chunk_size=65536):
+                    preview.extend(chunk[:max(0, 1048576 - len(preview))])
+                    if len(preview) >= 1048576:
+                        report.warnings.append("HTML analysis limited to the first 1 MB.")
+                        break
+            finally:
+                response.close()
+            html_text = preview.decode(response.encoding or "utf-8", errors="replace")
+            soup = BeautifulSoup(html_text, "html.parser")
             
             # Check for CAPTCHA
-            html_content = response.text.lower()
+            html_content = html_text.lower()
             if "g-recaptcha" in html_content or "hcaptcha" in html_content or "captcha" in html_content:
                 report.captcha_detected = True
                 report.warnings.append("CAPTCHA challenge forms detected in HTML payload.")
@@ -213,7 +239,7 @@ class WebAnalyzer:
                 report.difficulty = "hard"
         else:
             report.difficulty = "hard"
-
+            response.close()
         return report
 
     def generate_script(self, report: AnalysisReport) -> str:
@@ -222,23 +248,91 @@ class WebAnalyzer:
         script_filename = f"scrape_{safe_url}.py"
         script_path = str(Path(self.output_dir) / script_filename)
         
-        script_content = f"""# Generated Scraper Script for: {self.url}
+        script_content = f"""# Generated scraper for a checked public URL.
 import os
 import sys
 import time
+import math
+import ipaddress
+import socket
+import urllib.robotparser
+from urllib.parse import urljoin, urlparse
 import pandas as pd
 import requests
 
-# Target URL embedded as safely-serialized data, never raw interpolation
 URL = {json.dumps(self.url)}
 HEADERS = {{
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "data-fetcher-pipeline/2.0"
 }}
+"""
+        script_content += """
+def _validate_public_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Blocked URL: only public http(s) targets are allowed.")
+    try:
+        addresses = [ipaddress.ip_address(parsed.hostname)]
+    except ValueError:
+        addresses = [ipaddress.ip_address(entry[4][0]) for entry in socket.getaddrinfo(parsed.hostname, None)]
+    if not addresses or any(
+        address.is_private or address.is_loopback or address.is_link_local
+        or address.is_reserved or address.is_unspecified or address.is_multicast
+        for address in addresses
+    ):
+        raise ValueError("Blocked URL: target resolves to a non-public address.")
 
-def _fetch_with_retry(url, headers, retries=3):
+
+def _robots_allowed(url: str) -> bool:
+    parsed = urlparse(url)
+    current = parsed.scheme + "://" + parsed.netloc + "/robots.txt"
+    for _ in range(4):
+        _validate_public_url(current)
+        try:
+            response = requests.get(current, headers=HEADERS, timeout=10, allow_redirects=False)
+        except requests.RequestException:
+            return False
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                return False
+            current = urljoin(current, location)
+            continue
+        if response.status_code == 404:
+            response.close()
+            return True
+        if response.status_code != 200:
+            response.close()
+            return False
+        policy = urllib.robotparser.RobotFileParser()
+        policy.parse(response.text.splitlines())
+        response.close()
+        return policy.can_fetch("data-fetcher-pipeline", url)
+    return False
+
+
+def _request_checked(url: str, headers: dict[str, str]) -> requests.Response:
+    current = url
+    for _ in range(5):
+        _validate_public_url(current)
+        if not _robots_allowed(current):
+            raise ValueError("Blocked URL: robots.txt disallows this target or could not be verified.")
+        response = requests.get(current, headers=headers, timeout=30, allow_redirects=False, stream=True)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location")
+            response.close()
+            if not location:
+                raise ValueError("Redirect response has no Location header.")
+            current = urljoin(current, location)
+            continue
+        return response
+    raise ValueError("Too many redirects while fetching the target URL.")
+
+
+def _fetch_with_retry(url: str, headers: dict[str, str], retries: int = 3) -> requests.Response:
     for attempt in range(retries):
         try:
-            resp = requests.get(url, headers=headers, timeout=30)
+            resp = _request_checked(url, headers)
         except requests.RequestException:
             if attempt == retries - 1:
                 raise
@@ -246,87 +340,26 @@ def _fetch_with_retry(url, headers, retries=3):
             continue
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt == retries - 1:
+                resp.close()
                 raise RuntimeError("Request failed with status " + str(resp.status_code) + " after " + str(retries) + " attempts: " + url)
             retry_after = resp.headers.get('Retry-After', '')
             try:
                 delay = float(retry_after)
+                if not math.isfinite(delay) or delay < 0:
+                    delay = 2 ** (attempt + 1)
             except ValueError:
                 delay = 2 ** (attempt + 1)
-            time.sleep(delay)
+            resp.close()
+            time.sleep(min(delay, 60.0))
             continue
         return resp
+    raise RuntimeError("No response received after retry attempts.")
 
-def run_extraction():
-    print(f"Starting extraction for URL: {{URL}}")
 """
-        
-        if report.difficulty == "easy":
-            script_content += """    try:
-        response = _fetch_with_retry(URL, HEADERS)
-        if response.status_code != 200:
-            print(f"[Error] Failed to fetch data: {response.status_code}")
-            sys.exit(1)
-            
-        output_file = "downloaded_data.csv"
-        # Determine format
-        if "json" in response.headers.get("Content-Type", ""):
-            import json
-            data = response.json()
-            df = pd.json_normalize(data)
-            df.to_csv(output_file, index=False)
-        else:
-            with open(output_file, 'wb') as f:
-                f.write(response.content)
-                
-        print(f"[Success] Data extracted successfully to: {os.path.abspath(output_file)}")
-    except (requests.RequestException, ValueError, OSError) as e:
-        print(f"[Error] Execution failed: {e}")
-        sys.exit(1)
-"""
-        elif report.difficulty == "medium":
-            script_content += """    try:
-        response = _fetch_with_retry(URL, HEADERS)
-        if response.status_code != 200:
-            print(f"[Error] Failed to fetch HTML: {response.status_code}")
-            sys.exit(1)
-            
-        tables = pd.read_html(response.text)
-        print(f"Found {len(tables)} tables on page.")
-        for idx, table in enumerate(tables):
-            out_file = f"table_{idx}.csv"
-            table.to_csv(out_file, index=False)
-            print(f"Saved table {idx} to: {os.path.abspath(out_file)}")
-    except (requests.RequestException, ValueError, OSError) as e:
-        print(f"[Error] Extraction failed: {e}")
-        sys.exit(1)
-"""
-        elif report.difficulty == "hard":
-            script_content += """    print("[Warning] This site requires JavaScript rendering or session authentication.")
-    print("Please use standard browser orchestration frameworks like Playwright or Selenium.")
-    print("Example layout:")
-    print(\"\"\"
-    # from playwright.sync_api import sync_playwright
-    # with sync_playwright() as p:
-    #     browser = p.chromium.launch(headless=True)
-    #     page = browser.new_page()
-    #     page.goto(URL)
-    #     # interact with elements
-    #     html = page.content()
-    #     # extract text/tables
-    #     browser.close()
-    \"\"\")
-"""
-        else: # blocked
-            script_content += """    print("[Blocked] This website is protected by anti-bot measures (Cloudflare/CAPTCHA) or disallowed by robots.txt.")
-    print("Automation through scripts is blocked to protect the infrastructure and avoid IP bans.")
-    sys.exit(1)
-"""
-            
-        script_content += """
-if __name__ == "__main__":
-    run_extraction()
-"""
-        
+        from scripts.custom_template import EXTRACTION_BODY
+        script_content += "\nDIFFICULTY = " + json.dumps(report.difficulty) + "\n"
+        script_content += EXTRACTION_BODY
+
         try:
             with open(script_path, "w", encoding="utf-8") as f:
                 f.write(script_content)

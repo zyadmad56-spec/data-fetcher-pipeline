@@ -20,6 +20,7 @@ class CoinGeckoFetcher(BaseFetcher):
 
     def __init__(self, query: str, outdir: str, config: Dict[str, str]) -> None:
         super().__init__(query, outdir, config)
+        self.lightweight_preview = True
         self.coin_id: str = ""
         self.market_url: str = ""
         self._probe_payload: Optional[dict] = None  # scout's days=1 response, reused as preview
@@ -30,11 +31,7 @@ class CoinGeckoFetcher(BaseFetcher):
             print("[Preview] Reusing scout's 1-day probe (no extra request)...")
             df = self._payload_to_frame(self._probe_payload)
             if not df.empty:
-                print("\n" + "="*50)
-                print(" DATASET PREVIEW (First 5 Rows)")
-                print("="*50)
-                print(df.head(5).to_string())
-                print("="*50 + "\n")
+                self.show_preview(df)
             return
         super().preview()
 

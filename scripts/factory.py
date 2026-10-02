@@ -2,26 +2,11 @@ import importlib
 from typing import TYPE_CHECKING, Dict, Tuple
 
 from scripts.errors import DataFetchError
+from scripts.source_catalog import SOURCE_INFO  # re-exported for existing callers
 
 if TYPE_CHECKING:
     from scripts.base import BaseFetcher
 
-# Per-source discovery metadata for --list-sources (the agent-facing contract):
-# what a query means, an example, and whether credentials are needed.
-SOURCE_INFO: Dict[str, Dict[str, str]] = {
-    "yahoo":      {"platform": "Yahoo Finance", "query_format": "ticker symbol", "example": "AAPL", "auth": "none"},
-    "yfinance":   {"platform": "Yahoo Finance", "query_format": "ticker symbol", "example": "AAPL", "auth": "none"},
-    "fred":       {"platform": "Federal Reserve Economic Data", "query_format": "series ID", "example": "CPIAUCSL", "auth": "FRED_API_KEY"},
-    "sec":        {"platform": "SEC EDGAR XBRL", "query_format": "ticker symbol", "example": "AAPL", "auth": "SEC_API_KEY"},
-    "worldbank":  {"platform": "World Bank Indicators", "query_format": "indicator code", "example": "NY.GDP.MKTP.CD", "auth": "none"},
-    "eurostat":   {"platform": "Eurostat Bulk TSV", "query_format": "dataset code", "example": "nama_10_gdp", "auth": "none"},
-    "datagov":    {"platform": "Data.gov Catalog API v4", "query_format": "free text", "example": "climate", "auth": "optional (DATAGOV_API_KEY, DEMO_KEY fallback)"},
-    "github":     {"platform": "GitHub repositories", "query_format": "free text", "example": "covid", "auth": "recommended (GITHUB_TOKEN or gh CLI)"},
-    "kaggle":     {"platform": "Kaggle Datasets", "query_format": "owner/dataset-slug", "example": "uciml/iris", "auth": "KAGGLE_USERNAME + KAGGLE_KEY"},
-    "openml":     {"platform": "OpenML", "query_format": "name fragment or numeric dataset ID", "example": "iris", "auth": "none"},
-    "airbnb":     {"platform": "Inside Airbnb", "query_format": "city name", "example": "amsterdam", "auth": "none"},
-    "coingecko":  {"platform": "CoinGecko Crypto Markets", "query_format": "coin id or symbol", "example": "bitcoin", "auth": "none (365-day history cap without key)"},
-}
 
 # Lazy provider registry: CLI key -> (module path, class name). Modules are
 # imported on demand so a missing/broken optional dependency (e.g. yfinance)
@@ -45,7 +30,14 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
     """Resolve a source name to its fetcher class (lazy import) and instantiate it."""
     spec = _LAZY_REGISTRY.get(source.lower())
     if spec is None:
-        # Unknown sources fall through to the dynamic GenericFetcher (custom dirs)
+        if source.lower() == 'custom':
+            from scripts.custom_source import CustomFetcher
+            return CustomFetcher(query, outdir, config)
+        from scripts.source_registry import load_sources
+        descriptor = load_sources().get(source.lower())
+        if descriptor:
+            from scripts.custom_source import CustomFetcher
+            return CustomFetcher(query, outdir, config, source=source.lower(), descriptor=descriptor)
         from scripts.fetchers.generic import GenericFetcher
         return GenericFetcher(query, outdir, config, source=source)
 
@@ -63,4 +55,13 @@ def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) ->
 
 def list_sources() -> list:
     """Return all registered source names."""
-    return sorted(_LAZY_REGISTRY.keys())
+    return sorted(source_info())
+
+
+def source_info() -> dict:
+    from scripts.source_registry import load_sources
+    info = {k: dict(v) for k, v in SOURCE_INFO.items()}
+    for key, descriptor in load_sources().items():
+        info[key] = {'platform': descriptor['name'], 'query_format': 'public URL on registered host',
+                     'example': descriptor['url'], 'auth': 'none', 'saved': True}
+    return info

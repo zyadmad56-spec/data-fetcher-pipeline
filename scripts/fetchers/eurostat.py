@@ -1,4 +1,3 @@
-import io
 from typing import Dict
 import pandas as pd
 from scripts.base import BaseFetcher

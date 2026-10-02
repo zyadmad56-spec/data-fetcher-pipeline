@@ -1,7 +1,6 @@
-import io
 import os
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 from urllib.parse import quote
 import pandas as pd
 from scripts.base import BaseFetcher

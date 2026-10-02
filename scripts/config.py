@@ -25,21 +25,19 @@ def setup_wizard(non_interactive: bool = False) -> Dict[str, str]:
     config_dir, config_file = get_config_paths()
     
     
-    if Path(config_file).exists():
-        try:
+    try:
+        if Path(config_file).exists():
             with open(config_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            if isinstance(e, json.JSONDecodeError):
-                # A corrupt config must never silently masquerade as "no keys configured"
-                print(
-                    f"[Config] WARNING: config file at {config_file} is corrupt ({e}). "
-                    "Proceeding without it — fix the JSON syntax or delete the file.",
-                    file=sys.stderr,
-                )
-            if non_interactive:
-                return {}
-            print(f"[Error] Failed to load config file: {e}")
+    except (json.JSONDecodeError, OSError) as e:
+        print(
+            f"[Config] WARNING: cannot read config file at {config_file} ({e}). "
+            "Proceeding without it — check access and JSON syntax.",
+            file=sys.stderr,
+        )
+        if non_interactive:
+            return {}
+        print(f"[Error] Failed to load config file: {e}")
             
     if non_interactive:
         return {}
