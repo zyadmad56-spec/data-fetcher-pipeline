@@ -83,7 +83,7 @@ Install the Python package in your active environment. This installs its depende
 
 **Package Installation:**
 ```bash
-pip install .
+python -m pip install .
 ```
 With that environment active, run the command from any directory:
 ```bash
@@ -237,19 +237,45 @@ The pipeline supports 11 platforms across 12 CLI keys, including the Yahoo/yfina
 
 ## 5. How to Install
 
-To run the project locally:
+To run the project locally, install Python 3.10 or newer and Git first. On Windows, enable **Add Python to PATH** in the Python installer. Check that both commands work:
+
+```bash
+python --version
+git --version
+```
+
+`pyproject.toml` sets the required Python version and lists the package dependencies. Pip installs those dependencies, but it does not install Python itself.
 
 1. **Clone the Repository & Navigate:**
    ```bash
    git clone https://github.com/zyadmad56-spec/data-fetcher-pipeline.git
    cd data-fetcher-pipeline
    ```
-2. **Install Dependencies:**
-   Ensure your virtual environment is active, then install the package:
+2. **Create a Virtual Environment:**
+   From the repository folder, run:
    ```bash
-   pip install .
+   python -m venv .venv
    ```
-3. **Start the Guided Workflow:**
+   Activate it on Windows PowerShell:
+   ```powershell
+   .\.venv\Scripts\Activate.ps1
+   ```
+   On Windows Command Prompt:
+   ```bat
+   .venv\Scripts\activate.bat
+   ```
+   On macOS or Linux, use `python3` to create the environment, then activate it:
+   ```bash
+   source .venv/bin/activate
+   ```
+3. **Install Dependencies:**
+   With the environment active, install the package and its required libraries:
+   ```bash
+   python -m pip install --upgrade pip
+   python -m pip install .
+   ```
+   For Parquet support, use `python -m pip install ".[parquet]"`. For development and tests with Parquet support, use `python -m pip install ".[dev,parquet]"`.
+4. **Start the Guided Workflow:**
    Run without arguments to choose ready/saved sources or an external platform, answer up to five data questions, review a sample and approve saving. Provider credentials are requested when needed.
    ```bash
    python scripts/cli.py
