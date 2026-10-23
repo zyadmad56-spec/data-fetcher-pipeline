@@ -10,7 +10,7 @@ Fetch datasets, review a sample, and save them with a Markdown profile and a rec
 
 ### Project video
 
-https://github.com/user-attachments/assets/c8b0efe2-32e6-4182-87cb-d16d5605e902
+https://github.com/user-attachments/assets/853d3944-53ee-4cea-8d19-a223a5a990fb
 
 The guide below describes the current features and limits. [Download the Full HD video](media/data_fetcher_promo_en.mp4).
 
