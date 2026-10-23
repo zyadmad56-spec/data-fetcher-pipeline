@@ -607,7 +607,7 @@ def test_startup_smoke_imports_and_registry() -> None:
 
     expected = {
         "airbnb", "coingecko", "datagov", "eurostat", "fred", "github",
-        "kaggle", "openml", "sec", "worldbank", "yahoo", "yfinance",
+        "kaggle", "openml", "rdatasets", "sec", "worldbank", "yahoo", "yfinance",
     }
     assert set(_LAZY_REGISTRY.keys()) == expected
     assert callable(scripts.cli.main)
@@ -624,7 +624,7 @@ def test_cli_subprocess_list_sources_smoke() -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["status"] == "success"
-    assert len(payload["sources"]) == 12
+    assert len(payload["sources"]) == 13
     assert all({"key", "platform", "query_format", "example", "auth"} <= set(s) for s in payload["sources"])
     assert any(s["key"] == "coingecko" for s in payload["sources"])
     assert any(s["query_format"] == "series ID" for s in payload["sources"])
@@ -1094,7 +1094,7 @@ def test_lazy_registry_isolates_broken_provider(tmp_path: Path) -> None:
     assert "WORLDBANK_OK" in result.stdout, f"isolation broken: {result.stdout} {result.stderr}"
     assert "YAHOO_INSTANTIATES" in result.stdout, "yahoo should instantiate without yfinance"
     assert "YAHOO_CODED PROVIDER_UNAVAILABLE 3" in result.stdout, f"scout must fail coded: {result.stdout}"
-    assert "SOURCES 12" in result.stdout
+    assert "SOURCES 13" in result.stdout
 
 def test_cli_exit_3_on_provider_load_failure(tmp_path: Path, capsys) -> None:
     """A provider that fails to import exits 3 with a coded JSON envelope."""

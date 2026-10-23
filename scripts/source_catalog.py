@@ -16,4 +16,5 @@ SOURCE_INFO: Dict[str, Dict[str, str]] = {
     "openml":     {"platform": "OpenML", "query_format": "name fragment or numeric dataset ID", "example": "iris", "auth": "none"},
     "airbnb":     {"platform": "Inside Airbnb", "query_format": "city name", "example": "amsterdam", "auth": "none"},
     "coingecko":  {"platform": "CoinGecko Crypto Markets", "query_format": "coin id or symbol", "example": "bitcoin", "auth": "none (365-day history cap without key)"},
+    "rdatasets":  {"platform": "Rdatasets", "query_format": "package/dataset, unique name, or search words", "example": "datasets/iris", "auth": "none"},
 }

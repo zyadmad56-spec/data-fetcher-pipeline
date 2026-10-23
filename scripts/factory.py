@@ -24,6 +24,7 @@ _LAZY_REGISTRY: Dict[str, Tuple[str, str]] = {
     "datagov": ("scripts.fetchers.datagov", "DataGovFetcher"),
     "eurostat": ("scripts.fetchers.eurostat", "EurostatFetcher"),
     "coingecko": ("scripts.fetchers.coingecko", "CoinGeckoFetcher"),
+    "rdatasets": ("scripts.fetchers.rdatasets", "RdatasetsFetcher"),
 }
 
 def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) -> "BaseFetcher":

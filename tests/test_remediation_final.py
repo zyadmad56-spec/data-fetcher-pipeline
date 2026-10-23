@@ -110,7 +110,7 @@ def test_list_sources_v2_shape(tmp_path: Path) -> None:
     assert catalog_envelope.get("status") == "success"
 
     sources_catalog: List[Dict[str, str]] = catalog_envelope.get("sources", [])
-    assert len(sources_catalog) == 12
+    assert len(sources_catalog) == 13
     required_attributes = {"key", "platform", "query_format", "example", "auth"}
     for source_entry in sources_catalog:
         assert required_attributes.issubset(source_entry.keys())

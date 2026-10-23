@@ -1,5 +1,10 @@
 # Source-Specific Target Constraints & Heuristics
 
+- **Rdatasets:**
+  - Reads the public `datasets.csv` catalog at `https://vincentarelbundock.github.io/Rdatasets/` without credentials. Query with `package/dataset`, a unique dataset name, or search words. Multiple matches require choosing a qualified identifier; the provider does not silently pick one.
+  - Downloads the selected catalog CSV through the common bounded preview, approval, save, profile, manifest, and original-payload retention flow. CSV URLs must match the canonical Rdatasets host and package/dataset path. Catalog downloads have a 4 MB cap.
+  - Keeps every source column, including `rownames` when supplied. Catalog column counts may omit that row-name column. Parsing can infer types in the normalized CSV; the retained original preserves the downloaded bytes. Dataset reuse terms depend on the original package/data source.
+
 - **GitHub Constraints:**
   - **Discovery Strategy:** This fetcher uses repository search rather than code search. Discovery searches repositories by query sorted by stars (top 5), then walks the recursive git tree (`/git/trees/{branch}?recursive=1`) to locate tabular `.csv` data files.
   - **Authentication Chain:** Resolves authentication via `GITHUB_TOKEN` in environment variables first, then checks the global config JSON (`~/.config/data-fetcher-pipeline/config.json`), and falls back to `gh auth token` via the local `gh` CLI. Unauthenticated requests are allowed as a last resort under strict public rate limits.

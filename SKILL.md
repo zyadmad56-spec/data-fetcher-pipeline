@@ -26,7 +26,7 @@ Data Fetcher Pipeline helps analysts, engineers, students, and agents find datas
 ## Key Features & Architecture
 
 ### 1. Pre-Configured Sources & Setup Workflow
-* **Supported Platforms:** 12 CLI keys across 11 data platforms , run `--list-sources` for the authoritative list: `airbnb`, `coingecko`, `datagov`, `eurostat`, `fred`, `github`, `kaggle`, `openml`, `sec`, `worldbank`, `yahoo`/`yfinance` (aliases). Unknown source keys raise a coded error (`UNSUPPORTED_SOURCE`) listing all supported keys.
+* **Supported Platforms:** 13 CLI keys across 12 data platforms , run `--list-sources` for the authoritative list: `airbnb`, `coingecko`, `datagov`, `eurostat`, `fred`, `github`, `kaggle`, `openml`, `rdatasets`, `sec`, `worldbank`, `yahoo`/`yfinance` (aliases). Unknown source keys raise a coded error (`UNSUPPORTED_SOURCE`) listing all supported keys.
 * **Guided API Setup:**
   * Credentials live in a central global `config.json` (see `config_template.json` for all consumed keys).
   * The CLI reads the local config. Interactive providers can ask for missing credentials with masked input and save them; a bare CLI invocation starts source selection rather than a full credential setup wizard. Corrupt config files are reported loudly (stderr warning) instead of silently behaving as "no keys".
@@ -100,6 +100,7 @@ Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERRO
 | `kaggle` | `owner/dataset-slug` | `uciml/iris` |
 | `coingecko` | coin id or symbol (auto-resolved); no key needed, free tier caps history at 365 days | `bitcoin`, `sol` |
 | `openml` | dataset name fragment (exact match wins, then smallest; ranked candidates shown) or numeric dataset ID | `iris`, `61` |
+| `rdatasets` | package/dataset, unique dataset name, or search words; no key needed; ambiguous searches list choices | `datasets/iris`, `datasets/mtcars` |
 | `github` | free text: searches repos, then prefers the largest CSV within a 50 MB advisory budget; may select the smallest larger CSV with a warning | `covid` |
 | `datagov` | free text (GSA Catalog API v4; key optional, DEMO_KEY fallback) | `climate` |
 | `airbnb` | city name on insideairbnb.com | `amsterdam` |
@@ -120,7 +121,7 @@ Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERRO
 * `--defer-source-choice`: keep a pending custom extractor after full fetch; envelope includes `pending_source_id`. Ask the user, then use `--keep-source ID --save-source NAME` or `--discard-source ID`.
 * `--non-interactive`: runs without any input prompts (wizard, confirmations).
 * `--yes`: auto-approves pre-flight downloads (full row extraction unless `--rows`).
-* `--list-sources`: prints all supported sources and exits (JSON mode returns `{"status":"success","sources":[{"key","platform","query_format","example","auth"} ×12]}`).
+* `--list-sources`: prints all supported sources and exits (JSON mode returns `{"status":"success","sources":[{"key","platform","query_format","example","auth"} ×13]}`).
 * `--json-output`: emits the machine-readable JSON envelope as the only stdout artifact.
 * `--convert FORMAT FILE`: converts FILE to FORMAT. Targets: `csv`, `json`, `parquet`, `sqlite`/`db`, `excel`/`xlsx`. Returns `{"status","converted_file","source_file"}`. An existing destination is protected unless `--overwrite` is passed. Excel accepts at most 16,384 columns; SQLite targets accept at most 2,000 columns.
 
@@ -155,7 +156,7 @@ scripts/
 ├── provision.py            # Directory provisioning
 ├── config.py               # Credential wizard and lookup
 ├── web_analyzer.py         # Custom-URL scraping analyzer (SSRF-guarded)
-└── fetchers/               # One module per source (12 keys, lazy-imported)
+└── fetchers/               # One module per source (13 keys, lazy-imported)
 ```
 
 ---

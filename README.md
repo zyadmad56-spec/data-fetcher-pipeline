@@ -154,6 +154,7 @@ docker run \
 | Source | CLI Key | Description | Typical use case |
 | --- | --- | --- | --- |
 | **OpenML** | `openml` | Open-source machine learning platform for searching and retrieving benchmark datasets. | Finding benchmark datasets by name or ID. |
+| **Rdatasets** | `rdatasets` | Public CSV datasets from R packages. No API key required. | Teaching and statistical examples, selected by package/dataset such as `datasets/iris`. |
 | **Kaggle** | `kaggle` | Dataset downloads using an owner/dataset identifier. | ML Engineers training predictive models and testing algorithms. |
 | **SEC EDGAR** | `sec` | SEC XBRL company facts, flattened into rows. Does not download filing documents. | Financial analysts performing corporate research and financial modeling. |
 | **FRED** | `fred` | Federal Reserve Economic Data time-series macroeconomic indicators. | Data Engineers building macro-level data warehouses. |
@@ -213,6 +214,7 @@ data-fetcher-pipeline/
         ├── github_data.py      # GitHub repo search + tree CSV fetcher
         ├── kaggle_fetcher.py   # Kaggle dataset fetcher
         ├── openml_fetcher.py   # OpenML dataset fetcher
+        ├── rdatasets.py        # Public CSV datasets from R packages
         ├── sec.py              # SEC XBRL facts fetcher
         ├── worldbank.py        # World Bank Indicators API fetcher
         └── yahoo.py            # Historical daily prices
@@ -224,10 +226,29 @@ data-fetcher-pipeline/
 The Python package installs the CLI in the selected environment. Paths and directory creation use Python APIs. The current verification was run on Windows; it does not establish full compatibility on every operating system. Restricted or dynamic external sources may require a tailored extractor.
 
 **Data Source Efficacy:**
-The pipeline supports 11 platforms across 12 CLI keys, including the Yahoo/yfinance aliases. `--rows` limits saved rows; only some providers can limit transfer at the server. GitHub and Data.gov discovery choose a resource heuristically, so inspect `source_url` and the profile before using the result.
+The pipeline supports 12 platforms across 13 CLI keys, including the Yahoo/yfinance aliases. `--rows` limits saved rows; only some providers can limit transfer at the server. GitHub and Data.gov discovery choose a resource heuristically, so inspect `source_url` and the profile before using the result.
+
+### Rdatasets
+
+Use a package/dataset identifier to select a public CSV from [Rdatasets](https://vincentarelbundock.github.io/Rdatasets/):
+
+```bash
+data-fetcher --source rdatasets --query datasets/iris --preview-only --yes --non-interactive --json-output
+```
+
+After reviewing the sample, fetch the approved dataset:
+
+```bash
+data-fetcher --source rdatasets --query datasets/iris --yes --non-interactive --json-output
+```
+
+You can also search by a unique dataset name or words from its title. If several datasets match, the `AMBIGUOUS_DATASET` error lists up to ten package/dataset choices. Run the command again with the identifier you want.
+
+Rdatasets uses a public catalog and needs no API key, R installation, or extra Python package. Saved data keeps every CSV column, including `rownames` when present. Parsing can infer types and change formatting in the normalized CSV. A separate original file preserves the downloaded bytes and has its own hash. Check the original data source for its reuse terms.
 
 ## 4. Recent Updates
 
+- **Rdatasets:** Fetch public datasets from R packages without an API key. Choose a package/dataset, review a sample, then save the data with its profile and source record.
 - **Clean Architecture:** Core models and rules have no file or network effects. Application code owns the fetch lifecycle; adapters handle prompts, HTTP, storage, and conversion. Existing provider entry points remain available.
 - **Guided fetching:** Choose built-in or saved sources, or enter an external URL. Review actual sample rows before approving a full fetch.
 - **Saved custom sources:** Keep a reviewed extractor after a successful fetch, or discard its temporary script while keeping the dataset. Saved sources appear in `--list-sources`.

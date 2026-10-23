@@ -6,7 +6,7 @@ from typing import Optional
 
 PLATFORMS = [
     "kaggle", "worldbank", "sec", "fred", "eurostat",
-    "datagov", "openml", "airbnb", "github", "yahoo", "coingecko", "custom"
+    "datagov", "openml", "airbnb", "github", "yahoo", "coingecko", "rdatasets", "custom"
 ]
 
 def _sanitize(text: str) -> str:
