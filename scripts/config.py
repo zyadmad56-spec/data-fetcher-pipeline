@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import tempfile
 from getpass import getpass
 from typing import Dict, Tuple, Optional
 from pathlib import Path
@@ -8,9 +9,27 @@ from pathlib import Path
 from scripts.errors import DataFetchError
 
 def _write_config(config: Dict[str, str], config_file: str) -> None:
-    """Persist config JSON with owner-only file permissions where the OS supports it."""
-    with open(config_file, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4)
+    """Persist config JSON atomically with owner-only permissions.
+
+    The key file is written to a 0o600 temporary file in the destination
+    directory, flushed and fsynced, then moved into place with os.replace —
+    a crash or concurrent reader can never observe a half-written secrets
+    file.  POSIX-style permissions are applied where the OS supports them.
+    """
+    directory = os.path.dirname(os.path.abspath(config_file)) or "."
+    file_descriptor, temp_path = tempfile.mkstemp(prefix=".config-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, indent=4)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, config_file)
+    except BaseException:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
     try:
         os.chmod(config_file, 0o600)
     except OSError:

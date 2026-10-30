@@ -49,14 +49,20 @@ class FREDFetcher(BaseFetcher):
             return df
             
         url = f"https://api.stlouisfed.org/fred/series/observations?series_id={self.query}&api_key={self.api_key}&file_type=json"
-        
+
         try:
             response = request_with_retry(url)
         except ConnectionError as exc:
-            raise RuntimeError(f"FRED API request failed: {exc}") from exc
-            
+            # The exception text is deliberately not echoed: requests errors
+            # embed the full request URL, which carries the FRED API key.
+            raise RuntimeError(f"FRED API request failed: {type(exc).__name__}. "
+                               "Check network connectivity and retry.") from exc
+
         if response.status_code != 200:
-            raise ValueError(f"FRED API Error {response.status_code}: {response.text}")
+            # The raw response body is deliberately omitted: it may echo the
+            # key-bearing URL or provider debug output.
+            raise ValueError(f"FRED API Error {response.status_code}: the API rejected the request "
+                             f"for series '{self.query}'. Verify the series id and FRED_API_KEY.")
             
         api_response_payload = response.json()
         if "observations" not in api_response_payload or not api_response_payload["observations"]:

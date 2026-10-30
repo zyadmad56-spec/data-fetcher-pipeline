@@ -4,6 +4,7 @@ from urllib.parse import quote
 import pandas as pd
 from scripts.base import BaseFetcher
 from scripts.http_utils import request_with_retry
+from scripts.net_guard import UnresolvableHostError, validate_public_url
 
 class DataGovFetcher(BaseFetcher):
     """Fetcher for open government datasets from Data.gov (GSA Catalog API v4).
@@ -30,17 +31,38 @@ class DataGovFetcher(BaseFetcher):
         return key
 
     def _resolve_csv_url(self, payload: dict) -> None:
-        """Walk v4 search results and pick the first http(s) CSV distribution."""
+        """Walk v4 search results and pick the first public http(s) CSV distribution.
+
+        Every DCAT downloadURL/accessURL candidate must pass the public-URL
+        guard (scheme, embedded credentials, non-public IP or DNS answer) — a
+        catalog entry pointing at private address space is recorded as a
+        blocked distribution instead of being fetched.
+        """
         for item in payload.get("results", []):
             dcat = item.get("dcat", {})
             title = dcat.get("title", "Untitled Dataset")
             for dist in dcat.get("distribution", []):
                 fmt = str(dist.get("format", "")).upper()
                 access_url = dist.get("downloadURL") or dist.get("accessURL") or ""
-                if (fmt == "CSV" or access_url.lower().endswith(".csv")) and access_url.lower().startswith("http"):
-                    self.download_url = access_url
-                    self.dataset_title = title
-                    return
+                if not (fmt == "CSV" or access_url.lower().endswith(".csv")):
+                    continue
+                if not access_url.lower().startswith("http"):
+                    continue
+                try:
+                    validate_public_url(access_url)
+                except UnresolvableHostError:
+                    # DNS answers can be transiently unavailable; the
+                    # public-only transport revalidates this URL (and every
+                    # redirect hop) before any byte is fetched.
+                    pass
+                except ValueError as exc:
+                    self.completeness_warnings.append(
+                        f"Blocked DCAT distribution for '{title}' by the public-URL guard: {exc}"
+                    )
+                    continue
+                self.download_url = access_url
+                self.dataset_title = title
+                return
 
     def scout(self) -> Dict[str, str]:
         print(f"[Scout] Searching Data.gov Catalog API v4 for '{self.query}'...")
@@ -60,7 +82,7 @@ class DataGovFetcher(BaseFetcher):
             try:
                 response = request_with_retry(url, headers=headers)
             except ConnectionError as exc:
-                raise RuntimeError(f"Data.gov catalog query failed: {exc}") from exc
+                raise RuntimeError(f"Data.gov catalog query failed: {type(exc).__name__}.") from exc
 
             if response.status_code in (401, 403):
                 raise ValueError("Data.gov API rejected the API key. Check DATAGOV_API_KEY or remove it to use DEMO_KEY.")

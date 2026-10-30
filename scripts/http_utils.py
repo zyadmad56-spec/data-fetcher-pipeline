@@ -10,6 +10,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from scripts.errors import DataFetchError
+from scripts.net_guard import PinnedPublicHTTPAdapter, validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,17 @@ session = requests.Session()
 adapter = HTTPAdapter(pool_connections=10, pool_maxsize=10)
 session.mount("http://", adapter)
 session.mount("https://", adapter)
+
+# Untrusted/public transport: no ambient environment (no ~/.netrc auto-auth,
+# no proxy variables) and a connect-pinned adapter that revalidates every
+# DNS answer at connect time.  Used only when callers opt in via
+# request_with_retry(..., public_only=True); the default session above keeps
+# its historical semantics for built-in provider traffic.
+public_session = requests.Session()
+public_session.trust_env = False
+public_adapter = PinnedPublicHTTPAdapter(pool_connections=10, pool_maxsize=10)
+public_session.mount("http://", public_adapter)
+public_session.mount("https://", public_adapter)
 
 # Per-host politeness floor: enforced in EVERY mode within a single process
 # (scope note: state is per-process — back-to-back CLI invocations do NOT share
@@ -90,6 +102,9 @@ def request_with_retry(
     timeout: int = 30,
     stream: bool = False,
     allow_redirects: bool = True,
+    public_only: bool = False,
+    max_body_bytes: Optional[int] = None,
+    deadline_sec: Optional[float] = None,
 ) -> requests.Response:
     """HTTP GET with exponential backoff retry for transient failures.
 
@@ -97,18 +112,72 @@ def request_with_retry(
     probes; the caller must call close() on the returned response.
     With allow_redirects=False, 3xx responses are returned as-is so the caller
     can validate each redirect target (SSRF guard).
+    With public_only=True the request runs on the hardened transport: a
+    trust_env=False session (no ~/.netrc auto-auth, no ambient proxy
+    variables) whose pinned adapter validates every DNS answer at connect
+    time.  The target URL is checked by validate_public_url before the first
+    attempt, and each redirect hop is revalidated by the adapter itself.
+    With max_body_bytes set, non-streamed bodies larger than the cap (or a
+    Content-Length larger than the cap) raise a coded SIZE_LIMIT error;
+    streamed bodies remain the caller's responsibility to bound while reading.
+    With deadline_sec set, the whole call — retries and backoff sleeps
+    included — must complete within that many seconds (monotonic clock) or a
+    coded TIMEOUT error is raised; sleeps are additionally clamped to the
+    remaining budget.
     """
     last_error: Optional[Exception] = None
     last_response: Optional[requests.Response] = None
     attempt = 0
-    
+    started = time.monotonic()
+
+    def _deadline_exceeded() -> bool:
+        return deadline_sec is not None and (time.monotonic() - started) >= deadline_sec
+
+    def _remaining() -> Optional[float]:
+        if deadline_sec is None:
+            return None
+        return max(0.0, deadline_sec - (time.monotonic() - started))
+
+    def _sleep_bounded(seconds: float) -> None:
+        """Sleep for a backoff interval, clamped to the caller's deadline."""
+        remaining = _remaining()
+        time.sleep(seconds if remaining is None else min(seconds, remaining) if remaining > 0 else 0.0)
+
+    if public_only:
+        validate_public_url(url)
+
     while attempt < max_retries:
+        if _deadline_exceeded():
+            raise DataFetchError(
+                f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+                code="TIMEOUT",
+            )
         _enforce_host_pacing(url)
+        if _deadline_exceeded():
+            raise DataFetchError(
+                f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+                code="TIMEOUT",
+            )
         try:
-            response = session.get(url, headers=headers, timeout=timeout, stream=stream, allow_redirects=allow_redirects)
+            transport = public_session if public_only else session
+            response = transport.get(url, headers=headers, timeout=timeout, stream=stream, allow_redirects=allow_redirects)
             _METRICS["requests"] += 1
             if not stream:
                 _METRICS["bytes"] += len(response.content or b"")
+                if max_body_bytes is not None and len(response.content or b"") > max_body_bytes:
+                    response.close()
+                    raise DataFetchError(
+                        f"Response body exceeds the {max_body_bytes // 1024} KiB cap for {_public_error_url(url)}.",
+                        code="SIZE_LIMIT",
+                    )
+            elif max_body_bytes is not None:
+                content_length = response.headers.get("Content-Length", "")
+                if content_length.isdigit() and int(content_length) > max_body_bytes:
+                    response.close()
+                    raise DataFetchError(
+                        f"Content-Length exceeds the {max_body_bytes // 1024} KiB cap for {_public_error_url(url)}.",
+                        code="SIZE_LIMIT",
+                    )
             last_response = response
             
             if response.status_code == 429:
@@ -124,9 +193,9 @@ def request_with_retry(
                 retry_after = min(retry_after, 60.0)
                 logger.warning("Rate limited (429). Sleeping %.1fs before retry.", retry_after)
                 response.close()
-                time.sleep(retry_after)
+                _sleep_bounded(retry_after)
                 continue
-                
+
             if response.status_code >= 500:
                 attempt += 1
                 _METRICS["retries"] += 1
@@ -135,7 +204,7 @@ def request_with_retry(
                 wait = backoff_base ** attempt
                 logger.warning("Server error %d. Retrying in %.1fs.", response.status_code, wait)
                 response.close()
-                time.sleep(wait)
+                _sleep_bounded(wait)
                 continue
                 
             # Non-429 and non-5xx responses (e.g., 200, 401, 403, 404)
@@ -150,8 +219,8 @@ def request_with_retry(
                 break
             wait = backoff_base ** attempt
             logger.warning("Connection error on attempt %d. Retrying in %.1fs.", attempt, wait)
-            time.sleep(wait)
-            
+            _sleep_bounded(wait)
+
         except requests.Timeout as exc:
             last_error = exc
             attempt += 1
@@ -160,7 +229,7 @@ def request_with_retry(
                 break
             wait = backoff_base ** attempt
             logger.warning("Timeout on attempt %d. Retrying in %.1fs.", attempt, wait)
-            time.sleep(wait)
+            _sleep_bounded(wait)
             
     if last_response is not None and last_response.status_code == 429:
         last_response.close()

@@ -19,8 +19,10 @@ class WorldBankFetcher(BaseFetcher):
         try:
             response = request_with_retry(url)
         except ConnectionError as exc:
-            raise RuntimeError(f"World Bank API validation failed: {exc}") from exc
-            
+            raise RuntimeError(
+                f"World Bank API validation failed: {type(exc).__name__}. Check network connectivity and retry."
+            ) from exc
+
         if response.status_code != 200:
             raise ValueError(f"World Bank API responded with status {response.status_code}")
             
@@ -30,7 +32,9 @@ class WorldBankFetcher(BaseFetcher):
         if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[0], dict):
             # Check for error message
             if isinstance(payload, dict) and "message" in payload:
-                error_msg = payload["message"][0].get("value", "Unknown API error")
+                # Provider message is bounded: error channels must never carry
+                # unbounded provider-controlled text.
+                error_msg = str(payload["message"][0].get("value", "Unknown API error"))[:200]
                 raise ValueError(f"World Bank API Error: {error_msg}")
             raise ValueError(f"Invalid indicator '{self.indicator_id}' or no data returned.")
             

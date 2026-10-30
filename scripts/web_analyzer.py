@@ -1,66 +1,24 @@
 from pathlib import Path
-import ipaddress
 import json
 import logging
 import re
-import socket
+import socket  # kept importable: tests patch scripts.web_analyzer.socket.getaddrinfo
+import time
 import urllib.robotparser
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
 from scripts.errors import DataFetchError
 from scripts.http_utils import request_with_retry
+from scripts.net_guard import read_bounded_body, validate_public_url
 
 logger = logging.getLogger(__name__)
 
-def _is_blocked_ip(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address") -> bool:
-    return (
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_reserved or ip.is_unspecified or ip.is_multicast
-    )
-
-def validate_public_url(url: str) -> None:
-    """SSRF guard: raise ValueError unless the URL is http(s) and targets a public host.
-
-    Blocks non-http(s) schemes, localhost, and any address (literal or DNS-resolved)
-    in loopback, link-local (incl. cloud metadata), private, reserved, or multicast
-    ranges. Every redirect hop must pass this check before being followed.
-    """
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Blocked URL scheme '{parsed.scheme or '(none)'}' — only http/https are allowed.")
-    host = parsed.hostname or ""
-    if not host:
-        raise ValueError("Blocked URL: no hostname present.")
-
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        ip = None
-
-    if ip is not None:
-        if _is_blocked_ip(ip):
-            raise ValueError(f"Blocked target '{host}': loopback, link-local, private, or reserved address.")
-        return
-
-    if host.lower() == "localhost" or host.lower().endswith(".localhost"):
-        raise ValueError("Blocked target 'localhost'.")
-
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror as exc:
-        raise ValueError(f"Cannot resolve host '{host}': {exc}") from exc
-    for info in infos:
-        try:
-            resolved = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            continue
-        if _is_blocked_ip(resolved):
-            raise ValueError(
-                f"Blocked target '{host}' (resolves to {resolved}): "
-                "loopback, link-local, private, or reserved address."
-            )
+# Whole-job budget for one analyze() call (robots check, redirect walk and
+# HTML preview combined), enforced on a monotonic clock.
+ANALYSIS_DEADLINE_SECONDS = 90.0
+ROBOTS_MAX_BYTES = 512 * 1024
 
 @dataclass
 class AnalysisReport:
@@ -84,14 +42,15 @@ class WebAnalyzer:
         self.output_dir = output_dir
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
-    def _check_robots_txt(self) -> bool:
+    def _check_robots_txt(self, deadline: Optional[float] = None) -> bool:
         """Verify robots.txt compliance for the target URL.
 
-        robots.txt is fetched through the SSRF-guarded, timeout-bounded client
+        robots.txt is fetched through the SSRF-guarded, public-only transport
         with redirects OFF — urllib's auto-redirect would bypass validation and
-        could be abused to probe internal addresses. Any failure to RETRIEVE
-        A missing policy (404) permits access; unavailable or redirected
-        policies block analysis until they can be checked.
+        could be abused to probe internal addresses — and is streamed with a
+        512 KiB cap so a hostile server cannot push unbounded data.  Any
+        failure to RETRIEVE A missing policy (404) permits access; unavailable
+        or redirected policies block analysis until they can be checked.
         """
         parsed = urlparse(self.url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
@@ -103,13 +62,18 @@ class WebAnalyzer:
                 headers={"User-Agent": "data-fetcher-pipeline/2.0"},
                 timeout=10,
                 allow_redirects=False,
+                stream=True,
+                public_only=True,
+                deadline_sec=max(0.5, deadline - time.monotonic()) if deadline else None,
             )
-            response.close()
             if response.status_code == 404:
+                response.close()
                 return True
             if response.status_code != 200:
+                response.close()
                 return False
-            lines = response.text.splitlines()
+            lines = read_bounded_body(response, ROBOTS_MAX_BYTES).splitlines()
+            response.close()
             rp.parse(lines)
             return rp.can_fetch("data-fetcher-pipeline", self.url)
         except (ValueError, OSError, DataFetchError) as exc:
@@ -119,12 +83,16 @@ class WebAnalyzer:
     def analyze(self) -> AnalysisReport:
         """Perform request and evaluate scraping difficulty of target URL."""
         report = AnalysisReport(url=self.url)
+        deadline = time.monotonic() + ANALYSIS_DEADLINE_SECONDS
 
-        # SSRF guard: reject unsafe schemes and private/loopback/link-local targets
+        def budget() -> Optional[float]:
+            return max(0.5, deadline - time.monotonic())
+
+        # SSRF guard: reject unsafe schemes and non-public targets
         validate_public_url(self.url)
 
         # robots.txt is a compliance hard stop: a denied URL is never fetched
-        report.robots_allowed = self._check_robots_txt()
+        report.robots_allowed = self._check_robots_txt(deadline=deadline)
         if not report.robots_allowed:
             report.difficulty = "blocked"
             report.warnings.append("URL disallowed by target's robots.txt rules — fetch aborted (compliance hard stop).")
@@ -139,7 +107,15 @@ class WebAnalyzer:
         try:
             # Follow redirects manually so every hop passes the SSRF guard
             for _ in range(4):
-                response = request_with_retry(url, headers=headers, allow_redirects=False, stream=True)
+                if time.monotonic() >= deadline:
+                    report.difficulty = "blocked"
+                    report.status_code = 0
+                    report.warnings.append("Analysis deadline exceeded before the target could be fetched.")
+                    return report
+                response = request_with_retry(
+                    url, headers=headers, allow_redirects=False, stream=True,
+                    public_only=True, deadline_sec=budget(),
+                )
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location", "")
                     if not location:
@@ -149,7 +125,7 @@ class WebAnalyzer:
                     validate_public_url(url)
                     report.warnings.append(f"Redirected to {url}")
                     redirected = WebAnalyzer(url, self.output_dir)
-                    if not redirected._check_robots_txt():
+                    if not redirected._check_robots_txt(deadline=deadline):
                         report.robots_allowed = False
                         report.difficulty = 'blocked'
                         report.warnings.append('Redirect target robots policy disallows or cannot verify access.')
@@ -175,7 +151,7 @@ class WebAnalyzer:
             report.warnings.append(f'Provider refused access (HTTP {response.status_code}).')
             response.close()
             return report
-        
+
         try:
             report.content_length = int(response.headers.get("Content-Length", "0"))
         except ValueError:
@@ -217,11 +193,14 @@ class WebAnalyzer:
                     if len(preview) >= 1048576:
                         report.warnings.append("HTML analysis limited to the first 1 MB.")
                         break
+                    if time.monotonic() >= deadline:
+                        report.warnings.append("HTML analysis stopped at the analysis deadline.")
+                        break
             finally:
                 response.close()
             html_text = preview.decode(response.encoding or "utf-8", errors="replace")
             soup = BeautifulSoup(html_text, "html.parser")
-            
+
             # Check for CAPTCHA
             html_content = html_text.lower()
             if "g-recaptcha" in html_content or "hcaptcha" in html_content or "captcha" in html_content:
@@ -230,7 +209,7 @@ class WebAnalyzer:
 
             tables = soup.find_all("table")
             report.table_count = len(tables)
-            
+
             if report.captcha_detected or not report.robots_allowed:
                 report.difficulty = "blocked"
             elif report.table_count > 0:
@@ -247,12 +226,13 @@ class WebAnalyzer:
         safe_url = re.sub(r'[^a-zA-Z0-9_]', '_', self.url.split("://")[-1][:50])
         script_filename = f"scrape_{safe_url}.py"
         script_path = str(Path(self.output_dir) / script_filename)
-        
+
         script_content = f"""# Generated scraper for a checked public URL.
 import os
 import sys
 import time
 import math
+import codecs
 import ipaddress
 import socket
 import urllib.robotparser
@@ -265,34 +245,189 @@ HEADERS = {{
     "User-Agent": "data-fetcher-pipeline/2.0"
 }}
 """
-        script_content += """
-def _validate_public_url(url: str) -> None:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError("Blocked URL: only public http(s) targets are allowed.")
-    try:
-        addresses = [ipaddress.ip_address(parsed.hostname)]
-    except ValueError:
-        addresses = [ipaddress.ip_address(entry[4][0]) for entry in socket.getaddrinfo(parsed.hostname, None)]
-    if not addresses or any(
+        script_content += '''
+# --- Standalone network policy (no pipeline imports allowed here) -----------
+# The helpers below mirror scripts/net_guard.py; a parity test asserts both
+# implementations agree on hostile addresses so the copies cannot drift.
+
+ROBOTS_MAX_BYTES = 512 * 1024
+TRANSFER_DEADLINE_SECONDS = 90.0
+MAX_BYTES = 50 * 1024 * 1024
+XLSX_MAX_ENTRIES = 1000
+XLSX_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
+
+# Explicit empty proxies/auth: requests.get would otherwise apply ambient
+# proxy environment variables and ~/.netrc credentials automatically.
+NO_PROXIES = {'http': None, 'https': None}
+
+
+class _NoCredentials:
+    """Explicit empty auth — suppresses silent ~/.netrc credential lookup."""
+
+    def __call__(self, prepared):
+        return prepared
+
+
+NO_CREDENTIALS = _NoCredentials()
+
+
+def _unwrap_tunneling(address):
+    """Collapse IPv4-in-IPv6 encodings (mapped / 6to4 / Teredo) to real IPv4."""
+    if address.version != 6:
+        return address
+    mapped = address.ipv4_mapped
+    if mapped is not None:
+        return mapped
+    sixtofour = address.sixtofour
+    if sixtofour is not None:
+        return sixtofour
+    teredo = address.teredo
+    if teredo is not None:
+        return teredo[1]
+    return address
+
+
+def _blocked_flags(address):
+    return (
         address.is_private or address.is_loopback or address.is_link_local
         or address.is_reserved or address.is_unspecified or address.is_multicast
-        for address in addresses
-    ):
-        raise ValueError("Blocked URL: target resolves to a non-public address.")
+    )
+
+
+def _is_public_ip(address):
+    """True only for globally routable addresses (RFC 6598 shared space,
+    loopback, link-local, private, reserved, multicast and tunneled forms of
+    all of them are rejected)."""
+    if isinstance(address, str):
+        try:
+            address = ipaddress.ip_address(address.strip('[]'))
+        except ValueError:
+            return False
+    plain = _unwrap_tunneling(address)
+    if _blocked_flags(plain) or not plain.is_global:
+        return False
+    if plain is not address and _blocked_flags(address):
+        return False
+    return True
+
+
+def _validate_public_url(url: str) -> None:
+    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise ValueError('Blocked URL: ASCII control characters are not allowed in fetched URLs.')
+    parsed = urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError('Blocked URL: embedded userinfo (user:pass@host) is not allowed.')
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
+        raise ValueError('Blocked URL: only public http(s) targets are allowed.')
+    try:
+        literal = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not _is_public_ip(literal):
+            raise ValueError('Blocked URL: target is not a globally routable public address.')
+        return
+    host = parsed.hostname.lower()
+    if host == 'localhost' or host.endswith('.localhost'):
+        raise ValueError("Blocked URL: target 'localhost' is not allowed.")
+    addresses = []
+    for entry in socket.getaddrinfo(parsed.hostname, None):
+        candidate = ipaddress.ip_address(entry[4][0])
+        if not _is_public_ip(candidate):
+            raise ValueError('Blocked URL: target resolves to a non-public address.')
+        if candidate not in addresses:
+            addresses.append(candidate)
+    if not addresses:
+        raise ValueError('Blocked URL: target did not resolve to any address.')
+
+
+def _public_addresses(host):
+    """Resolve once and validate every DNS answer; [] means literal-IP host."""
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not _is_public_ip(literal):
+            raise ValueError('Blocked URL: target is not a globally routable public address.')
+        return []
+    addresses = []
+    for entry in socket.getaddrinfo(host, None):
+        candidate = ipaddress.ip_address(entry[4][0])
+        if not _is_public_ip(candidate):
+            raise ValueError('Blocked URL: target resolves to a non-public address.')
+        if candidate not in addresses:
+            addresses.append(candidate)
+    if not addresses:
+        raise ValueError('Blocked URL: target did not resolve to any address.')
+    return addresses
+
+
+def _checked_get(url, **kwargs):
+    """requests.get pinned to pre-validated DNS answers.
+
+    The target host is resolved once and every answer is validated; during the
+    request socket.getaddrinfo serves ONLY those validated answers, so a TTL=0
+    rebinding flip between validation and connection cannot divert the dial.
+    The URL itself is never rewritten, preserving the Host header, TLS SNI and
+    certificate hostname verification.  Single-threaded script: the resolver
+    swap is restored in a finally block.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ''
+    if not host:
+        raise ValueError('Blocked URL: no hostname present.')
+    addresses = _public_addresses(host)
+    real_getaddrinfo = socket.getaddrinfo
+    if addresses:
+        def pinned_getaddrinfo(host_arg, port_arg=None, family=0, type=0, proto=0, flags=0):
+            if host_arg == host:
+                answers = []
+                for address in addresses:
+                    answers.extend(real_getaddrinfo(str(address), port_arg, family, type, proto, flags))
+                return answers
+            return real_getaddrinfo(host_arg, port_arg, family, type, proto, flags)
+        socket.getaddrinfo = pinned_getaddrinfo
+    try:
+        merged = dict(kwargs)
+        merged.setdefault('proxies', NO_PROXIES)
+        merged.setdefault('auth', NO_CREDENTIALS)
+        return requests.get(url, **merged)
+    finally:
+        socket.getaddrinfo = real_getaddrinfo
+
+
+def _read_bounded(response, limit):
+    """Stream at most `limit` bytes and decode as UTF-8.
+
+    Responses that cannot stream (in-process fakes, non-streaming response
+    objects) fall back to their .text attribute truncated to the limit.
+    """
+    buffer = bytearray()
+    for chunk in response.iter_content(65536):
+        remaining = limit - len(buffer)
+        if remaining <= 0:
+            break
+        buffer.extend(chunk[:remaining])
+    if not buffer:
+        text = getattr(response, 'text', '')
+        if isinstance(text, str) and text:
+            return text[:limit]
+    return buffer.decode('utf-8', errors='replace')
 
 
 def _robots_allowed(url: str) -> bool:
     parsed = urlparse(url)
-    current = parsed.scheme + "://" + parsed.netloc + "/robots.txt"
+    current = parsed.scheme + '://' + parsed.netloc + '/robots.txt'
     for _ in range(4):
         _validate_public_url(current)
         try:
-            response = requests.get(current, headers=HEADERS, timeout=10, allow_redirects=False)
+            response = _checked_get(current, headers=HEADERS, timeout=10,
+                                    allow_redirects=False, stream=True)
         except requests.RequestException:
             return False
         if response.status_code in (301, 302, 303, 307, 308):
-            location = response.headers.get("Location")
+            location = response.headers.get('Location')
             response.close()
             if not location:
                 return False
@@ -304,10 +439,13 @@ def _robots_allowed(url: str) -> bool:
         if response.status_code != 200:
             response.close()
             return False
+        try:
+            body = _read_bounded(response, ROBOTS_MAX_BYTES)
+        finally:
+            response.close()
         policy = urllib.robotparser.RobotFileParser()
-        policy.parse(response.text.splitlines())
-        response.close()
-        return policy.can_fetch("data-fetcher-pipeline", url)
+        policy.parse(body.splitlines())
+        return policy.can_fetch('data-fetcher-pipeline', url)
     return False
 
 
@@ -316,32 +454,39 @@ def _request_checked(url: str, headers: dict[str, str]) -> requests.Response:
     for _ in range(5):
         _validate_public_url(current)
         if not _robots_allowed(current):
-            raise ValueError("Blocked URL: robots.txt disallows this target or could not be verified.")
-        response = requests.get(current, headers=headers, timeout=30, allow_redirects=False, stream=True)
+            raise ValueError('Blocked URL: robots.txt disallows this target or could not be verified.')
+        response = _checked_get(current, headers=headers, timeout=30, allow_redirects=False, stream=True)
         if response.status_code in (301, 302, 303, 307, 308):
-            location = response.headers.get("Location")
+            location = response.headers.get('Location')
             response.close()
             if not location:
-                raise ValueError("Redirect response has no Location header.")
+                raise ValueError('Redirect response has no Location header.')
             current = urljoin(current, location)
             continue
         return response
-    raise ValueError("Too many redirects while fetching the target URL.")
+    raise ValueError('Too many redirects while fetching the target URL.')
 
 
 def _fetch_with_retry(url: str, headers: dict[str, str], retries: int = 3) -> requests.Response:
+    started = time.monotonic()
+
+    def remaining():
+        return TRANSFER_DEADLINE_SECONDS - (time.monotonic() - started)
+
     for attempt in range(retries):
+        if remaining() <= 0:
+            raise RuntimeError('Transfer deadline of 90s exceeded while fetching ' + url)
         try:
             resp = _request_checked(url, headers)
         except requests.RequestException:
             if attempt == retries - 1:
                 raise
-            time.sleep(2 ** (attempt + 1))
+            time.sleep(min(2 ** (attempt + 1), max(0.0, remaining())))
             continue
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt == retries - 1:
                 resp.close()
-                raise RuntimeError("Request failed with status " + str(resp.status_code) + " after " + str(retries) + " attempts: " + url)
+                raise RuntimeError('Request failed with status ' + str(resp.status_code) + ' after ' + str(retries) + ' attempts: ' + url)
             retry_after = resp.headers.get('Retry-After', '')
             try:
                 delay = float(retry_after)
@@ -350,12 +495,14 @@ def _fetch_with_retry(url: str, headers: dict[str, str], retries: int = 3) -> re
             except ValueError:
                 delay = 2 ** (attempt + 1)
             resp.close()
-            time.sleep(min(delay, 60.0))
+            time.sleep(min(min(delay, 60.0), max(0.0, remaining())))
             continue
         return resp
-    raise RuntimeError("No response received after retry attempts.")
+    raise RuntimeError('No response received after retry attempts.')
 
-"""
+# --- End standalone network policy ------------------------------------------
+
+'''
         from scripts.custom_template import EXTRACTION_BODY
         script_content += "\nDIFFICULTY = " + json.dumps(report.difficulty) + "\n"
         script_content += EXTRACTION_BODY
@@ -365,5 +512,5 @@ def _fetch_with_retry(url: str, headers: dict[str, str], retries: int = 3) -> re
                 f.write(script_content)
         except OSError as exc:
             raise RuntimeError(f"Failed to save generated script to disk: {exc}") from exc
-            
+
         return script_path
