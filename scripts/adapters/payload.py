@@ -1,5 +1,6 @@
 """Bounded HTTP previews and streamed payload cache; no approval policy."""
 import os
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -10,6 +11,11 @@ from scripts.core.models import FetchState, PayloadSpec
 from scripts.core.names import sanitize_name
 from scripts.http_utils import add_metrics_bytes
 
+# Whole-download budget (connect + headers + streamed body) on a monotonic
+# clock.  Bounded but generous: payload sizes are capped separately by
+# spec.max_bytes (500 MB); this deadline stops stalled/hung transfers.
+DOWNLOAD_DEADLINE_SECONDS = 300.0
+
 
 class PayloadReader:
     def __init__(self, state: FetchState, spec: PayloadSpec, request):
@@ -19,7 +25,8 @@ class PayloadReader:
 
     def _bounded_csv_preview(self, url: str) -> pd.DataFrame:
         import io
-        response = self.request(url, headers=self.spec.headers, stream=True)
+        response = self.request(url, headers=self.spec.headers, stream=True,
+                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS)
         try:
             if response.status_code != 200:
                 raise DataFetchError(f'HTTP {response.status_code} fetching preview.', code='PROVIDER_ERROR')
@@ -36,7 +43,11 @@ class PayloadReader:
 
     def _preview_prefix(self, response) -> tuple[bytearray, bool]:
         payload = bytearray()
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
         for chunk in response.iter_content(16384):
+            if time.monotonic() >= deadline:
+                raise DataFetchError(
+                    f'Preview transfer exceeded the {DOWNLOAD_DEADLINE_SECONDS:.0f}s deadline.', code='TIMEOUT')
             add_metrics_bytes(len(chunk))
             remaining = self.spec.preview_bytes - len(payload)
             payload.extend(chunk[:remaining])
@@ -52,9 +63,15 @@ class PayloadReader:
         return payload[:last_newline + 1]
 
     def _download_to_tempfile(self, url: str, headers: Optional[Dict[str, str]] = None) -> Path:
-        """Reuse a capped streamed payload instead of downloading it for each phase."""
+        """Reuse a capped streamed payload instead of downloading it for each phase.
+
+        The download runs on the public-only transport (every DNS answer
+        revalidated at connect time, redirect hops included) under a monotonic
+        deadline.
+        """
         target = Path(self.state.outdir) / (sanitize_name(self.state.query) + '_payload.tmp')
-        response = self.request(url, headers=headers or self.spec.headers, stream=True)
+        response = self.request(url, headers=headers or self.spec.headers, stream=True,
+                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS)
         try:
             if response.status_code != 200:
                 raise ValueError(f'HTTP {response.status_code} while fetching payload.')
@@ -85,8 +102,13 @@ class PayloadReader:
 
     def _stream_payload(self, response, target: Path) -> None:
         written = 0
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
         with open(target, 'wb') as stream:
             for chunk in response.iter_content(1024 * 1024):
+                if time.monotonic() >= deadline:
+                    raise DataFetchError(
+                        f'Payload transfer exceeded the {DOWNLOAD_DEADLINE_SECONDS:.0f}s deadline mid-stream.',
+                        code='TIMEOUT')
                 written += len(chunk)
                 add_metrics_bytes(len(chunk))
                 if written > self.spec.max_bytes:

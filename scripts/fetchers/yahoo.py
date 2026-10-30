@@ -1,4 +1,5 @@
 from typing import Dict
+import re
 import pandas as pd
 from scripts.base import BaseFetcher
 from scripts.errors import DataFetchError
@@ -8,6 +9,29 @@ def _is_yahoo_rate_limit(exc: Exception) -> bool:
     name = type(exc).__name__.lower()
     msg = str(exc).lower()
     return "ratelimit" in name or "rate limit" in msg or "429" in msg or "too many requests" in msg
+
+def _safe_reason(exc: Exception) -> str:
+    """Sanitized exception prose for error channels.
+
+    Keeps short human-readable failure reasons; drops anything that looks like
+    a provider response body (HTML/XML tags, JSON braces, URLs that may embed
+    credentials or query secrets) and control characters, with a hard length
+    cap.  Returns an empty string when nothing safe remains.
+    """
+    text = " ".join(str(exc).split())
+    text = re.sub(r"<[!a-zA-Z/][^>]{0,400}>", " ", text)
+    text = re.sub(r"\S*://\S*", " ", text)
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
+    text = " ".join(text.split())
+    if not text or len(text) > 300 or "{" in text or "}" in text or "<" in text or ">" in text:
+        return ""
+    return text
+
+def _failure_message(prefix: str, exc: Exception) -> str:
+    reason = _safe_reason(exc)
+    if reason:
+        return f"{prefix}: {type(exc).__name__}: {reason}"
+    return f"{prefix}: {type(exc).__name__}. Verify the ticker symbol and retry."
 
 
 class YahooFinanceFetcher(BaseFetcher):
@@ -31,13 +55,13 @@ class YahooFinanceFetcher(BaseFetcher):
         except Exception as exc:
             if _is_yahoo_rate_limit(exc):
                 raise DataFetchError(
-                    f"Yahoo Finance rate limit hit while validating '{self.query}': {exc}\n"
+                    f"Yahoo Finance rate limit hit while validating '{self.query}'.\n"
                     "  Hint: Yahoo throttles repeated requests — wait ~60s and retry.",
                     code="RATE_LIMITED",
                 ) from exc
-            raise ValueError(
-                f"Yahoo Finance request for '{self.query}' failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            # Raw exception text is scrubbed before reaching error channels.
+            raise ValueError(_failure_message(
+                f"Yahoo Finance request for '{self.query}' failed", exc)) from exc
         if hist.empty:
             raise ValueError(f"Ticker '{self.query}' not found or delisted.")
         print("[Scout] Ticker validated and active.")
@@ -61,11 +85,10 @@ class YahooFinanceFetcher(BaseFetcher):
         except Exception as exc:
             if _is_yahoo_rate_limit(exc):
                 raise DataFetchError(
-                    f"Yahoo Finance rate limit hit while downloading '{self.query}': {exc}\n"
+                    f"Yahoo Finance rate limit hit while downloading '{self.query}'.\n"
                     "  Hint: rate limits usually clear within a minute.",
                     code="RATE_LIMITED",
                 ) from exc
-            raise ValueError(
-                f"Yahoo Finance download for '{self.query}' failed: {type(exc).__name__}: {exc}"
-            ) from exc
+            raise ValueError(_failure_message(
+                f"Yahoo Finance download for '{self.query}' failed", exc)) from exc
         return df
