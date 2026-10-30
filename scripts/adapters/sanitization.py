@@ -191,6 +191,11 @@ def scrub_exception_message(exc, code: str = 'INTERNAL') -> str:
     base = _URL_FRAGMENT.sub('#<redacted>', base)
     base = _BYTE_LITERAL_BODY.sub(_BODY_WITHHELD, base)
     base = _HTML_BODY.sub(_BODY_WITHHELD, base)
+    # Agent-channel neutrality: failure prose must carry no ANSI/OSC escape
+    # sequences and no raw BiDi overrides (smuggled e.g. inside repository
+    # names or titles). Sanitize uncapped here; the length cap below remains
+    # the single truncation point with its own marker.
+    base = sanitize_display_text(base, max_len=None)
     base = re.sub(r'\s+', ' ', base).strip()
     if len(base) > MAX_SCRUBBED_CHARS:
         base = base[:MAX_SCRUBBED_CHARS] + '…[truncated]'
