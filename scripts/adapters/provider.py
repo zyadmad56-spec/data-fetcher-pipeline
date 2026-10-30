@@ -29,9 +29,19 @@ class FetcherProvider:
 
     def _full_preview_frame(self):
         limit = self.fetcher.row_limit
+        bounded = getattr(self.fetcher, '_bounded_sample_frame', None)
+        if callable(bounded):
+            # Custom flows: the pre-approval sample is bounded to 5 rows and is
+            # NEVER cached as the final dataset; the full frame is fetched only
+            # after the human approves, with a valid PreviewReceipt.
+            return bounded(min(limit, 5) if limit > 0 else 5)
         try:
-            # Approval can increase the preset count, so cache the complete frame.
-            self.fetcher.row_limit = 0
+            if getattr(self.fetcher, 'preview_only', False):
+                # Bounded preview: even a full-transfer preview stops at 5 rows.
+                self.fetcher.row_limit = min(limit, 5) if limit > 0 else 5
+            else:
+                # Approval can increase the preset count, so cache the complete frame.
+                self.fetcher.row_limit = 0
             frame = self.fetcher.extract()
         finally:
             self.fetcher.row_limit = limit
