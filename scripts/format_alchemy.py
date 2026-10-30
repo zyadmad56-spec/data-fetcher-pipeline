@@ -3,16 +3,20 @@ import re
 import json
 import os
 import tempfile
+import zipfile
 from pathlib import Path
 
 
 import pandas as pd
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.utils import get_column_letter
 
 from scripts.errors import DataFetchError
 
 MAX_SQLITE_COLUMNS = 2000  # hard SQLite limit (SQLITE_MAX_COLUMN default)
 MAX_EXCEL_ROWS = 1048575   # data rows per sheet (1,048,576 total incl. header)
+MAX_XLSX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # zip-bomb ceiling: total uncompressed size
+MAX_XLSX_ENTRIES = 1000                          # zip-bomb ceiling: workbook part count
 
 class FormatAlchemyEngine:
     """Engine to convert CSV files into SQLite databases and Excel spreadsheets, and support bidirectional conversions."""
@@ -31,6 +35,26 @@ class FormatAlchemyEngine:
     def _safe_table_name(self) -> str:
         """Sanitize table name to prevent SQL injection and SQLite syntax errors."""
         return re.sub(r'[^a-zA-Z0-9_]', '_', self.dataset_name)
+
+    @staticmethod
+    def _literal_text_row(ws, row) -> list:
+        """Bind every string cell as a literal-text cell (data_type='s').
+
+        Spreadsheet engines (and Excel itself) can re-interpret strings that
+        begin with '=', '+', '-' or '@' as formulas; pinning the stored cell
+        TYPE to 's' keeps user data as data. ZERO characters of the value are
+        modified — this changes only how the cell is stored, never what it
+        contains. Numeric and None cells pass through untouched.
+        """
+        cells = []
+        for value in row:
+            if isinstance(value, str):
+                cell = WriteOnlyCell(ws, value=value)
+                cell.data_type = 's'
+                cells.append(cell)
+            else:
+                cells.append(value)
+        return cells
 
     @staticmethod
     def _temporary_csv_path(directory: Path) -> str:
@@ -98,7 +122,7 @@ class FormatAlchemyEngine:
 
                 wb = Workbook(write_only=True)
                 ws = wb.create_sheet(self.dataset_name[:31])
-                ws.append(headers)
+                ws.append(self._literal_text_row(ws, headers))
 
                 # Column widths from a bounded sample of the first rows (never
                 # exceeding the sheet cap itself)
@@ -117,12 +141,12 @@ class FormatAlchemyEngine:
                     ws.column_dimensions[get_column_letter(idx + 1)].width = min(max(widths.get(idx, 0), len(str(header))) + 2, 100)
 
                 for row in sample_rows:
-                    ws.append(row)
+                    ws.append(self._literal_text_row(ws, row))
                 streamed = len(sample_rows)
                 for row in cursor:
                     if streamed >= MAX_EXCEL_ROWS:
                         break  # cap enforced here — an out-of-spec workbook must never be produced
-                    ws.append(row)
+                    ws.append(self._literal_text_row(ws, row))
                     streamed += 1
                     if streamed % 100000 == 0:
                         print(f"[FormatAlchemy] ... {streamed:,}/{min(row_count, MAX_EXCEL_ROWS):,} rows written")
@@ -154,7 +178,7 @@ class FormatAlchemyEngine:
                 f"{self.MAX_EXCEL_COLUMNS}. Export to Parquet or CSV instead.",
                 code="SIZE_LIMIT",
             )
-        ws.append([str(c) for c in header.columns])
+        ws.append(self._literal_text_row(ws, [str(c) for c in header.columns]))
         for idx, col in enumerate(header.columns):
             ws.column_dimensions[get_column_letter(idx + 1)].width = min(max(len(str(col)) + 2, 12), 100)
 
@@ -167,7 +191,7 @@ class FormatAlchemyEngine:
                 for row in values.itertuples(index=False, name=None):
                     if written >= MAX_EXCEL_ROWS:
                         break
-                    ws.append(row)
+                    ws.append(self._literal_text_row(ws, row))
                     written += 1
                 if written >= MAX_EXCEL_ROWS:
                     break
@@ -189,9 +213,38 @@ class FormatAlchemyEngine:
         self.sqlite_to_excel()
         print("[FormatAlchemy] Transformation complete.")
 
+    @staticmethod
+    def _xlsx_size_guard(source_path: str) -> None:
+        """Pre-check the .xlsx zip container before any parser touches it.
+
+        Bounds the uncompressed size (<= 200 MB) and part count (<= 1,000) so
+        a crafted workbook cannot exhaust memory or disk. A file that is not
+        a readable zip is left alone here: the regular reader below raises
+        the original, expected error for that case.
+        """
+        try:
+            with zipfile.ZipFile(source_path) as bundle:
+                infos = bundle.infolist()
+        except (zipfile.BadZipFile, OSError):
+            return
+        if len(infos) > MAX_XLSX_ENTRIES:
+            raise DataFetchError(
+                f"Excel workbook contains {len(infos)} zip entries; the hard limit is "
+                f"{MAX_XLSX_ENTRIES}. The file may be a zip bomb and was rejected.",
+                code="SIZE_LIMIT",
+            )
+        uncompressed = sum(info.file_size for info in infos)
+        if uncompressed > MAX_XLSX_UNCOMPRESSED_BYTES:
+            raise DataFetchError(
+                f"Excel workbook expands to {uncompressed:,} bytes uncompressed; the hard limit "
+                f"is {MAX_XLSX_UNCOMPRESSED_BYTES:,}. The file may be a zip bomb and was rejected.",
+                code="SIZE_LIMIT",
+            )
+
     @classmethod
     def xlsx_to_csv(cls, source_path: str, target_path: str) -> str:
         """Convert Excel sheet to CSV format."""
+        cls._xlsx_size_guard(source_path)
         try:
             df = pd.read_excel(source_path, engine="openpyxl")
             df.to_csv(target_path, index=False)
