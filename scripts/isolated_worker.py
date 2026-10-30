@@ -178,7 +178,12 @@ class _WorkspacePolicy:
             if real:
                 self.read_roots.append(real)
         if os.name == 'posix':
-            self.read_roots.extend(_POSIX_TLS_DNS_ROOTS)
+            # macOS/systemd symlink indirection: /etc -> /private/etc etc. The
+            # read check compares realpaths, so allowed roots must be added in
+            # realpath form too (falling back to the raw path when unresolved).
+            for root in _POSIX_TLS_DNS_ROOTS:
+                real = _realpath(root)
+                self.read_roots.append(real if real else root)
 
     def _within(self, path: str, roots: list[str]) -> bool:
         return any(path == root or path.startswith(root + os.sep) for root in roots)

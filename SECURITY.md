@@ -72,10 +72,13 @@ fail closed on mismatch (`PREVIEW_TAMPERED`, `REGISTRY_INVALID`).
 
 ## Network egress
 
-The shared HTTP client validates that every direct target (and redirect hop)
-resolves only to globally routable public IP addresses, unwrapping
-IPv4-mapped/6to4/Teredo forms, and ignores ambient proxy/credential
-configuration (`trust_env=False`). `robots.txt` is honored with a bounded
+Untrusted/public fetches — custom sources and external payload downloads —
+run on a dedicated HTTP transport that validates that every direct target
+(and redirect hop) resolves only to globally routable public IP addresses,
+unwrapping IPv4-mapped/6to4/Teredo forms, and ignores ambient proxy and
+credential configuration (`trust_env=False`, explicit empty proxies covering
+`ALL_PROXY`). First-party provider API calls to fixed vendor endpoints use
+the shared default client. `robots.txt` is honored with a bounded
 512 KiB read; whole jobs run under a monotonic deadline. DNS validation and
 connection remain separate steps, so a rebinding race is narrowed, not
 eliminated. Vendor SDK transports (yfinance, Kaggle, OpenML) use their own

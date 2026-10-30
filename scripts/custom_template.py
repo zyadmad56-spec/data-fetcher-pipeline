@@ -88,10 +88,14 @@ def _parse_csv_bounded(response, payload_format, row_limit):
     needed = row_limit + 1  # header + the requested rows
     boundary = -1
     total = 0
+    # Bounded row requests (previews and explicit --rows) carry the smaller
+    # preview budget; only unbounded full fetches may use the full ceiling.
+    cap = MAX_PREVIEW_BYTES if row_limit else MAX_BYTES
     for chunk in response.iter_content(16384):
         total += len(chunk)
-        if total > MAX_BYTES:
-            raise ValueError('SIZE_LIMIT: custom payload exceeds 50 MB')
+        if total > cap:
+            raise ValueError('SIZE_LIMIT: custom payload exceeds the %d MB %s budget' % (
+                cap // (1024 * 1024), 'preview' if row_limit else 'transfer'))
         raw_chunks.append(chunk)
         text += decoder.decode(chunk)
         scanned, in_quotes, segment_start, records, boundary, done = _scan_complete_records(
@@ -139,8 +143,10 @@ def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
         if response.status_code != 200:
             raise ValueError('HTTP ' + str(response.status_code) + ' fetching dataset')
         length = response.headers.get('Content-Length', '')
-        if length.isdigit() and int(length) > MAX_BYTES:
-            raise ValueError('SIZE_LIMIT: custom payload exceeds 50 MB')
+        if length.isdigit() and int(length) > (MAX_PREVIEW_BYTES if row_limit else MAX_BYTES):
+            raise ValueError('SIZE_LIMIT: custom payload exceeds the %d MB %s budget' % (
+                (MAX_PREVIEW_BYTES if row_limit else MAX_BYTES) // (1024 * 1024),
+                'preview' if row_limit else 'transfer'))
         mime = response.headers.get('Content-Type', '').lower()
         final_url = response.url if isinstance(response.url, str) else target
         payload_format = _response_format(mime, final_url)
@@ -151,10 +157,12 @@ def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
             df = _parse_csv_bounded(response, payload_format, row_limit)
         else:
             chunks, total = [], 0
+            full_read_cap = MAX_PREVIEW_BYTES if row_limit else MAX_BYTES
             for chunk in response.iter_content(16384):
                 total += len(chunk)
-                if total > MAX_BYTES:
-                    raise ValueError('SIZE_LIMIT: custom payload exceeds 50 MB')
+                if total > full_read_cap:
+                    raise ValueError('SIZE_LIMIT: custom payload exceeds the %d MB %s budget' % (
+                        full_read_cap // (1024 * 1024), 'preview' if row_limit else 'transfer'))
                 chunks.append(chunk)
             body = b''.join(chunks)
             if payload_format in ('html', 'htm'):

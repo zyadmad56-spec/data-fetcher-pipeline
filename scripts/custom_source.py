@@ -75,7 +75,10 @@ class CustomFetcher(BaseFetcher):
             raise DataFetchError(f'Custom provider refused the request (HTTP {self.report.status_code}).', code='BLOCKED_URL' if self.report.status_code in (401,403) else 'PROVIDER_ERROR')
         if self.report.difficulty == 'blocked':
             raise DataFetchError('Target blocked by access policy or anti-bot protection. Use an authorized API/export.', code='BLOCKED_URL')
-        if self.report.difficulty == 'hard' and not self.descriptor:
+        if self.report.difficulty == 'hard' and not self.descriptor and self.extractor_bytes is None:
+            # A supplied/staged bespoke extractor (--extractor-script or an
+            # approved receipt) is exactly the reviewed extractor that hard
+            # targets require; only the template path needs to refuse here.
             raise DataFetchError('No supported export/table found; a reviewed platform-specific browser/API extractor is required.', code='UNSUPPORTED_SOURCE')
         self._lock_extractor_bytes()
         self.resolved_title = self.descriptor['name'] if self.descriptor else urlparse(self.query).hostname

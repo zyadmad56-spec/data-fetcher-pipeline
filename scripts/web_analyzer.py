@@ -253,12 +253,15 @@ HEADERS = {{
 ROBOTS_MAX_BYTES = 512 * 1024
 TRANSFER_DEADLINE_SECONDS = 90.0
 MAX_BYTES = 50 * 1024 * 1024
+MAX_PREVIEW_BYTES = 10 * 1024 * 1024
 XLSX_MAX_ENTRIES = 1000
 XLSX_MAX_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 
 # Explicit empty proxies/auth: requests.get would otherwise apply ambient
 # proxy environment variables and ~/.netrc credentials automatically.
-NO_PROXIES = {'http': None, 'https': None}
+# The 'all' key matters: requests consults ALL_PROXY/all_proxy for any
+# scheme as a fallback, so it must be pinned to None explicitly too.
+NO_PROXIES = {'http': None, 'https': None, 'all': None}
 
 
 class _NoCredentials:
@@ -378,10 +381,14 @@ def _checked_get(url, **kwargs):
     if not host:
         raise ValueError('Blocked URL: no hostname present.')
     addresses = _public_addresses(host)
+    try:
+        host_ascii = host.encode('idna').decode('ascii')
+    except UnicodeError:
+        host_ascii = host
     real_getaddrinfo = socket.getaddrinfo
     if addresses:
         def pinned_getaddrinfo(host_arg, port_arg=None, family=0, type=0, proto=0, flags=0):
-            if host_arg == host:
+            if host_arg == host or host_arg == host_ascii:
                 answers = []
                 for address in addresses:
                     answers.extend(real_getaddrinfo(str(address), port_arg, family, type, proto, flags))

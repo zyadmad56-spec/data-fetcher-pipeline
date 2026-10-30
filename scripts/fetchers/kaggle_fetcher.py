@@ -7,6 +7,7 @@ from typing import Dict
 import pandas as pd
 from scripts.base import BaseFetcher
 from scripts.config import get_api_key
+from scripts.errors import DataFetchError
 
 _KAGGLE_ENV_VARS = ("KAGGLE_USERNAME", "KAGGLE_KEY")
 ARCHIVE_UNCOMPRESSED_LIMIT = 500 * 1024 * 1024  # hard ceiling before extraction
@@ -48,8 +49,9 @@ class KaggleFetcher(BaseFetcher):
         with zipfile.ZipFile(archive) as bundle:
             members = bundle.infolist()
             if len(members) > ARCHIVE_MAX_ENTRIES:
-                raise ValueError(
-                    f"SIZE_LIMIT: Kaggle archive contains more than {ARCHIVE_MAX_ENTRIES} entries.")
+                raise DataFetchError(
+                    f"SIZE_LIMIT: Kaggle archive contains more than {ARCHIVE_MAX_ENTRIES} entries.",
+                    code="SIZE_LIMIT")
             for member in members:
                 parts = PurePosixPath(member.filename.replace("\\", "/")).parts
                 if (
@@ -58,16 +60,18 @@ class KaggleFetcher(BaseFetcher):
                     or any(":" in part for part in parts)
                     or member.filename.startswith(("/", "\\"))
                 ):
-                    raise ValueError(
+                    raise DataFetchError(
                         "BLOCKED: Kaggle archive member escapes the extraction directory: "
-                        + repr(member.filename))
+                        + repr(member.filename), code="BLOCKED_URL")
                 if stat.S_ISLNK(member.external_attr >> 16):
-                    raise ValueError(
-                        "BLOCKED: Kaggle archive contains a symlink entry: " + repr(member.filename))
+                    raise DataFetchError(
+                        "BLOCKED: Kaggle archive contains a symlink entry: " + repr(member.filename),
+                        code="BLOCKED_URL")
                 total_uncompressed += member.file_size
         if total_uncompressed > ARCHIVE_UNCOMPRESSED_LIMIT:
-            raise ValueError(
-                "SIZE_LIMIT: Kaggle archive expands beyond the 500 MB uncompressed limit.")
+            raise DataFetchError(
+                "SIZE_LIMIT: Kaggle archive expands beyond the 500 MB uncompressed limit.",
+                code="SIZE_LIMIT")
 
     def _download_and_parse(self) -> pd.DataFrame:
         try:
