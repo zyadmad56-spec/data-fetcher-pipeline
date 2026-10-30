@@ -56,10 +56,16 @@ and asks whether to save a successfully fetched external platform. Rejecting
 registration removes its temporary script and preserves the dataset.
 
 For chat agents, follow [the conversation workflow](references/conversation-workflow.md).
-Use `--preview-only --yes --non-interactive --json-output` to return actual sample
-rows before asking for final approval, then make the approved full fetch. CSV/TSV
-prefixes are bounded to 256 KB; SDK/compressed/custom previews can need full
-transfer. Separate preview/fetch commands may transfer twice.
+Use `--preview-only --yes --non-interactive --json-output` before asking for final
+approval. The preview JSON envelope carries **no sample cell values and no column
+names**: the human alone reads the sample from the private `_human_preview.md`
+artifact written beside the fetch, and agents must not read that file or the
+dataset artifacts. Custom extraction runs out-of-process in an isolated worker;
+a bespoke extractor is passed with `--extractor-script PATH` (bounded preview
+first) and the approved full fetch presents `--approve-preview PREVIEW_ID`,
+which runs the exact staged bytes. CSV/TSV prefixes are bounded to 256 KB;
+SDK/compressed previews can need full transfer; custom previews run a bounded
+5-row sample. Separate preview/fetch commands may transfer twice.
 
 `--source custom --query URL` now fetches supported public files/simple HTML tables
 through the normal CSV/profile/manifest pipeline. `--analyze-only` requests only
@@ -74,8 +80,9 @@ ask the user, then resolve the returned ID using `--keep-source ID --save-source
 "Platform Name" --json-output` or `--discard-source ID --json-output`. No second
 download is needed. Saved platforms appear beside built-ins in `--list-sources`,
 with checksum-checked scripts under `~/.config/data-fetcher-pipeline/source_scripts`.
-Corrupt descriptors and collisions fail explicitly. Scripts are trusted local
-code, not a sandbox.
+Corrupt descriptors and collisions fail explicitly. Extractor execution uses an
+out-of-process worker with fail-fast checks and runtime defense-in-depth — it is
+not a sandbox; see `SECURITY.md`.
 
 ### Installation Strategy
 
@@ -179,6 +186,7 @@ data-fetcher-pipeline/
 ├── LICENSE
 ├── README.md
 ├── SKILL.md
+├── SECURITY.md
 ├── references/
 │   ├── architecture.md        # Dependencies and compatibility seams
 │   ├── conversation-workflow.md # Agent preview and approval steps

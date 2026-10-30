@@ -5,7 +5,9 @@ render inert on every automatic agent channel (stdout/stderr), while clean
 display text stays byte-for-byte intact for the interactive human.
 """
 import os
+import re
 import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
@@ -288,3 +290,20 @@ def test_auto_approved_preview_sends_no_cell_values_to_any_channel(tmp_path, cap
     assert '\x1b' not in combined and '\u202e' not in combined
     # Lifecycle reporting still works; only the raw table is gone.
     assert 'Initiating extraction sequence' in captured.out
+
+
+# --- CLI documentation parity (Phase 12) ---------------------------------------
+
+
+def test_skill_md_flags_exist_in_cli_parser():
+    """Every --flag documented in SKILL.md must exist in the CLI parser."""
+    from scripts.cli import _build_argument_parser
+    skill = Path(__file__).resolve().parents[1] / 'SKILL.md'
+    documented = set(re.findall(r'(--[a-z][a-z0-9-]+)', skill.read_text(encoding='utf-8')))
+    assert documented, 'SKILL.md must document the CLI flags'
+    parser = _build_argument_parser()
+    implemented = set()
+    for action in parser._actions:
+        implemented.update(action.option_strings)
+    missing = sorted(documented - implemented)
+    assert not missing, f'Flags documented in SKILL.md but missing from the CLI: {missing}'

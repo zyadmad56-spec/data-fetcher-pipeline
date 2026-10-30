@@ -45,11 +45,25 @@ fetch and conversion. CLI owns the final response and temporary extractor cleanu
   observation and streamed-cache release. It preserves provider preview overrides
   and public `save_csv` overrides.
 - `adapters/terminal.py`: existing prompts, progress and sample rendering; explicit
-  noninteractive interaction never asks for input. JSON alone grants no approval.
+  noninteractive interaction never asks for input and never renders the sample
+  table. JSON alone grants no approval.
 - `adapters/registry.py` and `adapters/conversion.py`: adapt the existing local
   registry and conversion implementations, preserving their public import paths,
   locks, checksums, path checks and supported conversion matrix.
-- `composition.py`: selects concrete adapters. The existing lazy `factory.py`
+- `adapters/sanitization.py`: agent-boundary presentation safety — display
+  sanitization (ANSI/CSI/OSC and BiDi neutralization), bounded error scrubbing,
+  and the human-only `_human_preview.md` preview artifact. It rewrites how values
+  are displayed, never stored dataset values.
+- `adapters/extractor_protocol.py` and `adapters/script_runner.py`: the worker
+  IPC contract (strict JSON request/result + CSV payload, never a pickle) and
+  the static AST gate plus out-of-process `SubprocessExtractorRunner`.
+  `isolated_worker.py` installs the runtime audit hooks. All three are
+  fail-fast/defense-in-depth, not a sandbox (`SECURITY.md`).
+- `net_guard.py`: global-only IP policy, URL validation and the connect-pinned
+  transport shared by the analyzer and the instrumented HTTP client.
+- `composition.py`: selects concrete adapters and resolves `--extractor-script`
+  / `--approve-preview` into in-memory extractor bytes and preview receipts.
+  The existing lazy `factory.py`
   selects provider classes without loading unrelated optional SDKs.
 
 `BaseFetcher` retains its constructor, hooks and public methods as compatibility

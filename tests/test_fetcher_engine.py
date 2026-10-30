@@ -949,7 +949,9 @@ def test_robots_fetched_via_validated_client(tmp_path: Path) -> None:
     assert report.difficulty == "easy"
 
 def test_json_output_stdout_is_pure(tmp_path: Path, capsys) -> None:
-    """Under --json-output, stdout carries ONLY the JSON envelope; progress goes to stderr."""
+    """Under --json-output, stdout carries ONLY the JSON envelope; internal
+    provider progress reaches NEITHER agent-facing channel (Phase 10 stderr
+    isolation: progress is captured into an in-memory buffer)."""
     from scripts.cli import main
 
     mock_fetcher = MagicMock()
@@ -976,7 +978,7 @@ def test_json_output_stdout_is_pure(tmp_path: Path, capsys) -> None:
     assert payload["status"] == "success"
     assert payload["rows"] == 5
     assert "[Scout]" not in captured.out
-    assert "[Scout]" in captured.err
+    assert "[Scout]" not in captured.err  # stderr isolation (Phase 10)
 
 # ---------------------------------------------------------------------------
 # Tier 1 — Trust Contract: atomic saves, manifest, completeness, lazy registry

@@ -53,18 +53,39 @@ successful extraction.
 ## 4. Show actual rows before final approval
 
 Explain preview transfer cost first. Uncompressed CSV/TSV samples read a prefix
-up to 256 KB; compressed/SDK/custom previews may need a full transfer. Obtain
-consent to that transfer when necessary.
+up to 256 KB; compressed/SDK previews may need a full transfer; custom sources
+run a bounded 5-row sample through the isolated worker. Obtain consent to that
+transfer when necessary.
 
 ```text
 data-fetcher --source SOURCE --query SELECTOR --preview-only --yes --non-interactive --json-output --outdir DIR
 ```
 
 Use optional `--columns a,b` for exact required fields or `--table INDEX` for a
-simple HTML table. Display sample rows, source URL/title, columns and limitations
-in chat. A path or "preview done" is insufficient. Five rows are a sample, not
-the completed dataset. Compare it against the user's goal/scope/fields and ask
-for final approval. Failed previews must be resolved before final extraction.
+simple HTML table.
+
+**The preview JSON envelope contains no sample cell values and no column
+names.** The human reads the sample from the private artifact
+`<outdir>/<source>/<query>/_human_preview.md` (source URL, transfer scope,
+column names, and the first five rows). Direct the human to open that file
+themselves and confirm the sample matches their request. Do NOT read
+`_human_preview.md` yourself, and never read `*_raw.csv`, `*_source_*`, or
+`*_description.md` files to bypass the envelope redaction — the sample is the
+human's alone to inspect. Relay the envelope's `source_url`, `transfer_scope`,
+`rows_sampled`, `column_count` and `warnings`, then ask for final approval.
+A path or "preview done" is insufficient: the human must actually review the
+artifact. Five rows are a sample, not the completed dataset. Failed previews
+must be resolved before final extraction.
+
+For a bespoke custom extractor, write the reviewed script first (see
+"Reviewed tailored extractors" below) and preview it with:
+
+```text
+data-fetcher --source custom --query URL --extractor-script PATH --preview-only --yes --non-interactive --json-output --outdir DIR
+```
+
+The preview returns a `preview_id`. Keep it: the approved full fetch must
+present it.
 
 ## 5. Fetch the approved result
 
@@ -72,11 +93,26 @@ for final approval. Failed previews must be resolved before final extraction.
 data-fetcher --source SOURCE --query SELECTOR --yes --non-interactive --json-output --outdir DIR --output-format FORMAT
 ```
 
+Every non-interactive **custom** full fetch (new, bespoke, or saved
+`custom_*`) additionally requires the approved preview:
+
+```text
+data-fetcher --source custom --query URL --approve-preview PREVIEW_ID --yes --non-interactive --json-output --outdir DIR --output-format FORMAT --defer-source-choice
+```
+
+`--approve-preview` runs the extractor bytes staged with that exact preview —
+never the original file, so later edits to the script file cannot swap what
+runs. The URL, `--columns` and `--table` must match the previewed request or
+the fetch fails with `APPROVAL_MISMATCH`. Built-in sources keep the plain
+`--yes` behavior. Interactive terminal runs approve at the sample prompt
+instead and do not need the flag.
+
 Use `--rows N` only if requested, `--columns` only for exact field selection,
 and the requested output format: csv/json/excel/parquet/sqlite. Inspect the
-artifact, row count, warnings and conversion. Separate preview and full-fetch
-commands may transfer data twice; disclose this. Row limits do not universally
-reduce network traffic.
+row count, warnings and conversion in the envelope (not the dataset files —
+see the redaction rules above). Separate preview and full-fetch commands may
+transfer data twice; disclose this. Row limits do not universally reduce
+network traffic.
 
 ## 6. Ask whether to retain a new external platform
 
@@ -105,12 +141,16 @@ Where the template cannot represent an authorized platform, the agent may write
 and test a platform-specific script exposing:
 `extract_frame(url=None, columns=None, table_index=None, row_limit=0) -> DataFrame`.
 Reuse access checks, enforce transfer caps/timeouts, honor quotas and propagate
-failure. Review the actual records and show a sample before saving. Only after
-successful verified extraction and the user's retention answer, call
-`scripts.source_registry.save_source(name, url, Path(script))` for yes; for no,
-delete only the task's identified temporary script. Never register arbitrary
-downloaded code without reviewing it. The generated-code mechanism is trusted
-local execution, not a sandbox.
+failure. Run it through the bounded-preview → human-approval flow above (the
+script executes in an isolated worker process, never in the CLI process). Show
+the human the `_human_preview.md` artifact before saving. Only after the
+human's approval and retention answer, register with
+`--approve-preview PREVIEW_ID --save-source "Platform Name"` (or resolve the
+pending choice with `--keep-source`/`--discard-source`); registration always
+stores the exact staged bytes that were previewed. Never register arbitrary
+downloaded code without reviewing it. The generated-code mechanism is reviewed
+local execution with fail-fast checks and runtime defense-in-depth — it is not
+a sandbox (see `SECURITY.md`).
 
 ## Direct terminal interview and storage
 

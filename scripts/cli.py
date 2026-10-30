@@ -67,6 +67,11 @@ def _gc_orphan_dir(fetcher) -> None:
     except (OSError, TypeError):
         pass
 
+def _scrubbed_warnings(warnings_list: list) -> list:
+    """Neutralize externally sourced text inside envelope warnings."""
+    from scripts.adapters.sanitization import sanitize_display_text
+    return [sanitize_display_text(str(w), max_len=500) for w in warnings_list]
+
 def _fetch_envelope_meta(fetcher) -> dict:
     """Build envelope metadata from fetcher state, defensively (mock-safe)."""
     def typed(attr, default):
@@ -83,9 +88,10 @@ def _fetch_envelope_meta(fetcher) -> dict:
 
     trunc_raw = getattr(fetcher, "truncation", None)
 
+    from scripts.adapters.sanitization import sanitize_display_text
     return {
         "source_url": typed("dataset_url", ""),
-        "resolved_title": typed("resolved_title", "") or None,
+        "resolved_title": sanitize_display_text(typed("resolved_title", ""), max_len=300) or None,
         "sha256": typed("last_sha256", ""),
         "bytes": typed("last_bytes", 0),
         "description_path": typed("last_description_path", ""),
@@ -94,7 +100,7 @@ def _fetch_envelope_meta(fetcher) -> dict:
         "original_sha256": typed("last_original_sha256", ""),
         "original_bytes": typed("last_original_bytes", 0),
         "complete": complete,
-        "warnings": warnings_list,
+        "warnings": _scrubbed_warnings(warnings_list),
         "truncation": trunc_raw if isinstance(trunc_raw, dict) else None,
     }
 
@@ -113,7 +119,8 @@ class _RunState:
     warnings: list = field(default_factory=list)
 
 
-def _parse_arguments():
+def _build_argument_parser():
+    """Assemble the CLI parser (split from parsing so tests can inspect flags)."""
     parser = argparse.ArgumentParser(description="Data Fetcher Background Engine")
     parser.add_argument("--source", required=False, help="Target data platform (e.g., yfinance, fred, airbnb)")
     parser.add_argument("--query", required=False, help="Topic, ticker symbol, or series ID")
@@ -122,8 +129,10 @@ def _parse_arguments():
     parser.add_argument("--non-interactive", action="store_true", help="Run without user input prompt blocks")
     parser.add_argument("--yes", action="store_true", help="Auto-approve pre-flight data downloads")
     parser.add_argument("--rows", type=int, default=0, help="Save only the first N rows (transfer savings depend on provider)")
-    parser.add_argument("--preview-only", action="store_true", help="Return five sample rows; do not save dataset")
+    parser.add_argument("--preview-only", action="store_true", help="Write the human-only preview artifact; do not save dataset")
     parser.add_argument("--analyze-only", action="store_true", help="Assess custom URL without extraction")
+    parser.add_argument("--extractor-script", metavar="PATH", help="Run this reviewed extractor file for --source custom (bounded preview first; approval uses the staged bytes)")
+    parser.add_argument("--approve-preview", metavar="ID", help="Approve a bounded preview by its preview ID for a full custom fetch (runs the staged extractor bytes)")
     parser.add_argument("--save-source", metavar="NAME", help="Register a custom source after successful fetch")
     parser.add_argument("--defer-source-choice", action="store_true", help="Keep a pending custom extractor while the agent asks whether to register it")
     parser.add_argument("--keep-source", metavar="ID", help="Register a pending extractor using --save-source NAME; no new download")
@@ -136,8 +145,11 @@ def _parse_arguments():
     parser.add_argument("--json-output", action="store_true", help="Provide machine-readable JSON output")
     parser.add_argument("--convert", nargs=2, metavar=("FORMAT", "FILE"), help="Convert FILE to FORMAT")
     parser.add_argument("--overwrite", action="store_true", help="Allow --convert to replace an existing output file")
+    return parser
 
-    return parser.parse_args()
+
+def _parse_arguments():
+    return _build_argument_parser().parse_args()
 
 
 def _source_choice(args):
@@ -195,6 +207,23 @@ def _validate_fetch_options(args):
         raise DataFetchError('Choose preview or analysis, not both.', code='ARG_MISSING')
     if args.analyze_only and args.source.lower() != 'custom':
         raise DataFetchError('--analyze-only requires --source custom.', code='ARG_MISSING')
+    is_custom = args.source is not None and (
+        args.source.lower() == 'custom' or args.source.lower().startswith('custom_'))
+    if args.extractor_script:
+        if args.source is None or args.source.lower() != 'custom':
+            raise DataFetchError('--extractor-script requires --source custom.', code='ARG_MISSING')
+        if args.analyze_only:
+            raise DataFetchError('--extractor-script cannot be combined with --analyze-only.', code='ARG_MISSING')
+        if args.approve_preview:
+            raise DataFetchError('--approve-preview runs the extractor bytes stored with the approved '
+                                 'preview; do not pass --extractor-script with it.', code='ARG_MISSING')
+    if args.approve_preview:
+        if not is_custom:
+            raise DataFetchError('--approve-preview requires a custom source (--source custom or a saved custom_* key).', code='ARG_MISSING')
+        if args.preview_only:
+            raise DataFetchError('--preview-only creates a new preview; --approve-preview belongs to the full fetch.', code='ARG_MISSING')
+        if args.analyze_only:
+            raise DataFetchError('--analyze-only performs no extraction; --approve-preview is not needed.', code='ARG_MISSING')
 
 
 def _configure_fetcher(fetcher, args):
@@ -208,13 +237,38 @@ def _configure_fetcher(fetcher, args):
 
 
 def _preview_envelope(fetcher, source):
+    """Agent-facing preview envelope: ZERO cell values, ZERO column names.
+
+    The sample rows and column names are written to the human-only
+    ``_human_preview.md`` artifact instead; the envelope carries only counts,
+    dtypes, the artifact path and (for custom flows) the preview ID that a
+    later ``--approve-preview`` must present.
+    """
+    from scripts.adapters.sanitization import write_human_preview
     frame = fetcher.preview_frame
-    return {'status': 'success', 'mode': 'preview', 'source': source,
-            'source_url': fetcher.dataset_url,
-            'sample': json.loads(frame.iloc[:, :30].to_json(orient='records', date_format='iso')),
-            'columns': [str(c) for c in frame.columns], 'rows': len(frame),
-            'transfer_scope': fetcher.transfer_scope, 'output_path': None,
-            'warnings': _fetch_envelope_meta(fetcher)['warnings']}
+    warnings = _fetch_envelope_meta(fetcher)['warnings']
+    try:
+        scope = fetcher.preview_transfer_scope()
+    except Exception:
+        scope = getattr(fetcher, 'transfer_scope', '') or ''
+    title = f'{source} dataset preview: {getattr(fetcher, "query", "")}'
+    preview_path = write_human_preview(
+        frame, str(getattr(fetcher, 'dataset_url', '')), title,
+        Path(getattr(fetcher, 'outdir', '.')), scope, warnings)
+    envelope = {
+        'status': 'success', 'mode': 'preview', 'source': source,
+        'source_url': getattr(fetcher, 'dataset_url', ''),
+        'preview_path': str(Path(preview_path).resolve()),
+        'rows_sampled': int(len(frame)),
+        'column_count': int(len(frame.columns)),
+        'dtypes': [str(dtype) for dtype in frame.dtypes],
+        'transfer_scope': scope, 'output_path': None,
+        'warnings': warnings,
+    }
+    receipt = getattr(fetcher, '_pending_receipt', None)
+    if receipt is not None:
+        envelope['preview_id'] = receipt.preview_id
+    return envelope
 
 
 def _retain_custom_source(fetcher, args):
@@ -225,7 +279,7 @@ def _retain_custom_source(fetcher, args):
 def _network_envelope(source, metrics):
     custom = source.lower() == 'custom' or source.lower().startswith('custom_')
     sdk = source.lower() in {'yahoo', 'yfinance', 'openml', 'kaggle'}
-    scope = ('unavailable: generated extractor uses its own HTTP client' if custom else
+    scope = ('unavailable: extractor runs in an isolated worker' if custom else
              'unavailable: provider SDK uses its own HTTP client' if sdk else
              'instrumented HTTP client only')
     return {'provider_requests': None if sdk or custom else metrics['requests'],
@@ -265,17 +319,30 @@ def _prepare_fetch(args):
 
 def _analyze_source(args):
     from scripts.web_analyzer import WebAnalyzer
+    from scripts.adapters.sanitization import sanitize_display_text
     from dataclasses import asdict
     report = WebAnalyzer(args.query, str(Path(args.outdir) / 'custom')).analyze()
-    return {'status': 'success', 'mode': 'analysis', **asdict(report)}
+    data = asdict(report)
+    for key, value in data.items():
+        if key == 'warnings' and isinstance(value, list):
+            data[key] = [sanitize_display_text(str(w), max_len=300) for w in value]
+        elif isinstance(value, str):
+            data[key] = sanitize_display_text(value, max_len=300)
+        elif isinstance(value, dict):
+            data[key] = {str(k): sanitize_display_text(str(v), max_len=200) for k, v in value.items()}
+    return {'status': 'success', 'mode': 'analysis', **data}
 
 
 def _fetch_dataset(args, state):
     from scripts.http_utils import reset_metrics, get_metrics
+    from scripts.composition import resolve_custom_inputs
     config = _prepare_fetch(args)
     if args.analyze_only:
         return _analyze_source(args)
-    state.fetcher = get_fetcher(args.source, args.query, args.outdir, config)
+    extractor_bytes, approved_receipt = resolve_custom_inputs(args)
+    state.fetcher = get_fetcher(args.source, args.query, args.outdir, config,
+                                extractor_bytes=extractor_bytes,
+                                approved_receipt=approved_receipt)
     _configure_fetcher(state.fetcher, args)
     reset_metrics()
     csv_path = state.fetcher.run()
@@ -305,17 +372,21 @@ def _execute(args, state):
 
 
 def _failure_envelope(exc):
+    from scripts.adapters.sanitization import scrub_exception_message
     if isinstance(exc, DataFetchError):
-        return {'status': 'error', 'code': exc.code, 'message': str(exc)}, exc.exit_code
+        return {'status': 'error', 'code': exc.code,
+                'message': scrub_exception_message(exc, exc.code)}, exc.exit_code
     if isinstance(exc, (KeyboardInterrupt, EOFError)):
         code = 'ABORTED' if isinstance(exc, KeyboardInterrupt) else 'INTERACTIVE_REQUIRED'
         return {'status': 'error', 'code': code, 'message':
                 'Interactive input required but unavailable. Add --yes flag for non-interactive mode.'}, (
                     130 if isinstance(exc, KeyboardInterrupt) else 1)
     if isinstance(exc, (ValueError, RuntimeError, ImportError, OSError)):
-        return {'status': 'error', 'code': _fallback_code(exc), 'message': str(exc)}, 1
+        code = _fallback_code(exc)
+        return {'status': 'error', 'code': code,
+                'message': scrub_exception_message(exc, code)}, 1
     return {'status': 'error', 'code': 'INTERNAL',
-            'message': f'{type(exc).__name__}: {exc}'}, 1
+            'message': scrub_exception_message(f'{type(exc).__name__}: {exc}', 'INTERNAL')}, 1
 
 
 def _cleanup_fetcher(fetcher):
@@ -359,6 +430,40 @@ def _print_response(envelope, args, stdout):
             print('[Warning] ' + warning, file=stdout)
 
 
+class _ProgressCapture:
+    """Bounded in-memory sink for internal progress prints in --json-output mode.
+
+    Provider ``print()`` progress never reaches the agent-facing channels: the
+    first 16 KiB are retained here for diagnostics and the overflow is
+    discarded. The JSON envelope printed to the real stdout remains the only
+    machine-readable artifact.
+    """
+
+    def __init__(self, cap_bytes: int = 16 * 1024) -> None:
+        self._cap = cap_bytes
+        self._chunks: list = []
+        self._kept = 0
+        self.discarded = 0
+
+    def write(self, text) -> int:
+        text = str(text)
+        room = self._cap - self._kept
+        if room > 0:
+            self._chunks.append(text[:room])
+            self._kept += min(len(text), room)
+        self.discarded += max(len(text) - room, 0)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        return False
+
+    def getvalue(self) -> str:
+        return ''.join(self._chunks)
+
+
 def main() -> None:
     if _startup_error is not None:
         print(json.dumps({'status': 'error', 'code': 'STARTUP_FAILURE',
@@ -369,7 +474,9 @@ def main() -> None:
     state = _RunState()
     real_stdout, exit_code = sys.stdout, 0
     if args.json_output:
-        sys.stdout = sys.stderr
+        # Phase 10: internal progress is captured into memory, never aliased
+        # to stderr — the agent-facing stderr channel stays clean.
+        sys.stdout = _ProgressCapture()
     try:
         try:
             envelope = _execute(args, state)
@@ -383,7 +490,9 @@ def main() -> None:
         finally:
             sys.stdout = real_stdout
     if state.warnings:
-        envelope.setdefault('warnings', []).extend(state.warnings)
+        from scripts.adapters.sanitization import sanitize_display_text
+        envelope.setdefault('warnings', []).extend(
+            sanitize_display_text(str(w), max_len=500) for w in state.warnings)
     _print_response(envelope, args, real_stdout)
     if exit_code or args.list_sources or args.convert:
         sys.exit(exit_code)

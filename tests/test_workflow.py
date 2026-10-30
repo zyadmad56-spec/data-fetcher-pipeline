@@ -242,18 +242,59 @@ def test_registry_path_traversal_rejected(tmp_path):
 
 
 def run_custom_cli(tmp_path, argv, inputs=None):
+    """Drive the CLI for a custom fetch against a controlled offline fixture.
+
+    The extractor runs in the real out-of-process worker, so in-process
+    ``requests.get``/``socket.getaddrinfo`` mocks are invisible to it; tests
+    instead pass a reviewed fixture extractor (``--extractor-script``) that
+    builds its frame in memory and performs no network or filesystem I/O.
+    """
     report = AnalysisReport(url='https://example.com/data.csv', difficulty='easy')
     with patch('sys.argv', ['data-fetcher', '--source','custom','--query',report.url,'--outdir',str(tmp_path / 'data'), *argv]), \
          patch('scripts.cli.setup_wizard', return_value={}), \
          patch('scripts.web_analyzer.WebAnalyzer.analyze', return_value=report), \
-         patch('socket.getaddrinfo', return_value=[(2,1,6,'',('93.184.216.34',0))]), \
-         patch('requests.get', side_effect=lambda url, **k: MagicMock(status_code=404, headers={}) if url.endswith('/robots.txt') else response(b'value,label\n1,real\n2,real\n3,real\n')), \
          patch('builtins.input', side_effect=inputs or AssertionError('Machine mode prompted')):
         main()
 
 
+ROW_EXTRACTOR = '''import pandas as pd
+
+
+def extract_frame(query_url, columns=None, table_index=None, row_limit=None):
+    frame = pd.DataFrame({"value": [1, 2, 3], "label": ["real", "real", "real"]})
+    if columns:
+        missing = [name for name in columns if name not in frame.columns]
+        if missing:
+            raise ValueError("missing columns: " + ", ".join(missing))
+    if row_limit and row_limit > 0:
+        frame = frame.head(int(row_limit))
+    return frame
+'''
+
+SINGLE_EXTRACTOR = '''import pandas as pd
+
+
+def extract_frame(query_url, columns=None, table_index=None, row_limit=None):
+    return pd.DataFrame({"a": [42]})
+'''
+
+
+def write_extractor(tmp_path, source: str, name: str) -> Path:
+    script = tmp_path / name
+    script.write_text(source, encoding='utf-8')
+    return script
+
+
 def test_custom_json_fetch_saves_data_and_source(tmp_path, capsys):
-    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--save-source','Portal','--output-format','excel','--rows','2'])
+    extractor = write_extractor(tmp_path, ROW_EXTRACTOR, 'rows_extractor.py')
+    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--preview-only',
+                              '--extractor-script', str(extractor)])
+    preview = json.loads(capsys.readouterr().out)
+    assert preview['mode'] == 'preview' and preview['preview_id']
+    assert 'sample' not in preview and 'columns' not in preview
+    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--save-source','Portal',
+                              '--output-format','excel','--rows','2',
+                              '--approve-preview', preview['preview_id']])
     envelope = json.loads(capsys.readouterr().out)
     assert envelope['status'] == 'success' and envelope['rows'] == 2
     assert Path(envelope['output_path']).is_file() and Path(envelope['converted_file']).is_file()
@@ -262,15 +303,23 @@ def test_custom_json_fetch_saves_data_and_source(tmp_path, capsys):
 
 
 def test_custom_preview_json_contains_actual_rows_no_dataset(tmp_path, capsys):
-    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--preview-only'])
-    envelope = json.loads(capsys.readouterr().out)
-    assert envelope['mode'] == 'preview' and envelope['sample'][0]['label'] == 'real'
-    assert envelope['output_path'] is None
+    extractor = write_extractor(tmp_path, ROW_EXTRACTOR, 'preview_extractor.py')
+    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--preview-only',
+                              '--extractor-script', str(extractor)])
+    captured = capsys.readouterr()
+    envelope = json.loads(captured.out)
+    assert envelope['mode'] == 'preview' and envelope['rows_sampled'] >= 1
+    assert envelope['output_path'] is None and envelope['preview_id']
+    assert 'sample' not in envelope and 'columns' not in envelope
+    preview_text = Path(envelope['preview_path']).read_text(encoding='utf-8')
+    assert 'real' in preview_text  # the human-only artifact carries the sample
+    assert 'real' not in captured.out and 'real' not in captured.err  # agent channels stay cell-free
     assert not list((tmp_path / 'data').rglob('*raw.csv')) and not load_sources()
 
 
 def test_declining_registration_preserves_data_removes_only_script(tmp_path):
-    run_custom_cli(tmp_path, [], ['y', 'y', 'n'])
+    extractor = write_extractor(tmp_path, ROW_EXTRACTOR, 'decline_extractor.py')
+    run_custom_cli(tmp_path, ['--extractor-script', str(extractor)], ['y', 'y', 'n'])
     assert len(list((tmp_path / 'data').rglob('*raw.csv'))) == 1
     assert not load_sources()
     assert not list((tmp_path / 'data').rglob('*.py'))
@@ -278,7 +327,12 @@ def test_declining_registration_preserves_data_removes_only_script(tmp_path):
 
 @pytest.mark.parametrize('keep', [True, False])
 def test_agent_can_resolve_retention_after_cli_exits_without_refetch(tmp_path, capsys, keep):
-    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--defer-source-choice'])
+    extractor = write_extractor(tmp_path, ROW_EXTRACTOR, 'defer_extractor.py')
+    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--preview-only',
+                              '--extractor-script', str(extractor)])
+    preview = json.loads(capsys.readouterr().out)
+    run_custom_cli(tmp_path, ['--yes','--non-interactive','--json-output','--defer-source-choice',
+                              '--approve-preview', preview['preview_id']])
     envelope = json.loads(capsys.readouterr().out)
     token = envelope['pending_source_id']
     pending = tmp_path / 'config' / 'pending_sources'
@@ -295,19 +349,26 @@ def test_agent_can_resolve_retention_after_cli_exits_without_refetch(tmp_path, c
 
 
 def test_saved_source_actually_extracts_again(tmp_path):
-    script, _ = generated(tmp_path)
+    extractor = write_extractor(tmp_path, SINGLE_EXTRACTOR, 'single_extractor.py')
     with patch('scripts.web_analyzer.validate_public_url'):
-        key = save_source('Portal', 'https://example.com/data.csv', script)
-    f = get_fetcher(key, 'https://example.com/data.csv', str(tmp_path / 'again'), {})
-    f.auto_approve = True
-    report = AnalysisReport(url=f.query, difficulty='easy')
-    with patch('scripts.web_analyzer.WebAnalyzer.analyze', return_value=report), \
-         patch('socket.getaddrinfo', return_value=[(2,1,6,'',('93.184.216.34',0))]), \
-         patch('requests.get', side_effect=lambda url, **k: MagicMock(status_code=404,headers={}) if url.endswith('/robots.txt') else response(b'a\n42\n')):
-        output = f.run()
+        key = save_source('Portal', 'https://example.com/data.csv', extractor)
+    report = AnalysisReport(url='https://example.com/data.csv', difficulty='easy')
+    # Bounded preview first: the registered source creates its own receipt.
+    f1 = get_fetcher(key, 'https://example.com/data.csv', str(tmp_path / 'again'), {})
+    f1.auto_approve = True
+    f1.preview_only = True
+    with patch('scripts.web_analyzer.WebAnalyzer.analyze', return_value=report):
+        assert f1.run() == ''
+    preview_id = f1._pending_receipt.preview_id
+    # Approved full fetch replays the registered bytes through the receipt.
+    f2 = get_fetcher(key, 'https://example.com/data.csv', str(tmp_path / 'again'), {},
+                     approved_receipt=preview_id)
+    f2.auto_approve = True
+    with patch('scripts.web_analyzer.WebAnalyzer.analyze', return_value=report):
+        output = f2.run()
     assert pd.read_csv(output).a.tolist() == [42]
-    assert f._workspace is None  # reusable script not deleted by cleanup
-    f.cleanup()
+    assert f2._workspace is None  # reusable script not deleted by cleanup
+    f2.cleanup()
     assert verified_script(load_sources()[key]).is_file()
 
 

@@ -6,8 +6,8 @@
   - Keeps every source column, including `rownames` when supplied. Catalog column counts may omit that row-name column. Parsing can infer types in the normalized CSV; the retained original preserves the downloaded bytes. Dataset reuse terms depend on the original package/data source.
 
 - **GitHub Constraints:**
-  - **Discovery Strategy:** This fetcher uses repository search rather than code search. Discovery searches repositories by query sorted by stars (top 5), then walks the recursive git tree (`/git/trees/{branch}?recursive=1`) to locate tabular `.csv` data files.
-  - **Authentication Chain:** Resolves authentication via `GITHUB_TOKEN` in environment variables first, then checks the global config JSON (`~/.config/data-fetcher-pipeline/config.json`), and falls back to `gh auth token` via the local `gh` CLI. Unauthenticated requests are allowed as a last resort under strict public rate limits.
+  - **Discovery Strategy:** This fetcher uses repository search rather than code search. Discovery searches repositories by query sorted by stars (top 5), then walks the recursive git tree (`/git/trees/{branch}?recursive=1`) to locate tabular `.csv` data files. The scope is strictly CSV: repository metadata, tree paths and CSV blobs — never Issues, pull requests, or their attachments.
+  - **Authentication Chain:** Resolves authentication via `GITHUB_TOKEN` in environment variables first, then checks the global config JSON (`~/.config/data-fetcher-pipeline/config.json`), and falls back to `gh auth token` via the local `gh` CLI. The resolved token is attached only to `api.github.com` calls and is withheld from `raw.githubusercontent.com` and every other host. Unauthenticated requests are allowed as a last resort under strict public rate limits.
   - **Advisory Budget & Skip Handling:** Enforces a 50 MB advisory budget (`MAX_CSV_BYTES`). Prefers the largest CSV within budget; if all available CSVs exceed budget, settles for the smallest and emits a completeness warning. Repositories whose git tree returns `truncated: true` or trigger HTTP/network errors are skipped and documented in completeness warnings.
 
 - **Yahoo Finance Adaptation:**

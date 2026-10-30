@@ -38,7 +38,7 @@ Data Fetcher Pipeline helps analysts, engineers, students, and agents find datas
 
 ### 3. Custom Web Source Analysis & Anti-Blocking Protection
 * **Scraping Assessment:** analyzes custom URLs for scraping difficulty (EASY, MEDIUM, HARD, BLOCKED) based on robots.txt, Cloudflare, CAPTCHAs, and rate-limiting headers.
-* **Safety checks:** a robots.txt denial stops the target fetch after checking robots.txt. The analyzer and generated script reject private IPs and check redirects. These URL checks are best-effort because DNS can change between validation and connection; do not treat generated scripts as a hardened sandbox.
+* **Safety checks:** a robots.txt denial stops the target fetch after checking robots.txt. The analyzer and generated script reject private IPs and check redirects. Custom extractor code runs out-of-process in an isolated worker (AST gate + PEP 578 audit hooks — fail-fast defense-in-depth, not a sandbox; see `SECURITY.md`). These URL checks are best-effort because DNS can change between validation and connection; do not treat generated scripts as a hardened sandbox.
 
 ---
 
@@ -51,7 +51,11 @@ data-fetcher --source <source> --query <query> --yes --non-interactive --json-ou
 ```
 `python scripts/cli.py` works when the current directory is the skill root.
 
-**Agent execution recipe:** after the relevant conversation/transfer approval, pass `--yes --non-interactive --json-output` together. Use `--preview-only` for the sample stage and a separate full fetch after final approval. `--non-interactive` disables prompts; **stdout carries only the final JSON envelope** and progress goes to stderr. Bare `--json-output` without `--yes`/`--non-interactive` is rejected for fetches with `INTERACTIVE_REQUIRED`; discovery, conversion and pending-source choices need no download approval.
+**Agent execution recipe:** after the relevant conversation/transfer approval, pass `--yes --non-interactive --json-output` together. Use `--preview-only` for the sample stage and a separate full fetch after final approval. `--non-interactive` disables prompts; **stdout carries only the final JSON envelope**, and internal progress is captured in memory — it reaches neither stdout nor stderr. Bare `--json-output` without `--yes`/`--non-interactive` is rejected for fetches with `INTERACTIVE_REQUIRED`; discovery, conversion and pending-source choices need no download approval.
+
+### Human-only preview and receipt binding (custom sources)
+
+Custom extraction never runs extractor code in the CLI process. Preview with `--source custom --query URL --extractor-script PATH --preview-only`: the script's bytes are staged, a bounded 5-row sample runs in an isolated worker process, and the JSON envelope returns `preview_path` (the private `_human_preview.md`), `rows_sampled`, `column_count`, `dtypes` and a `preview_id` — **zero sample cell values and zero column names**. The human alone opens `_human_preview.md`; agents must not read it or the dataset artifacts (`*_raw.csv`, `*_source_*`, `*_description.md`). The approved full fetch passes `--approve-preview PREVIEW_ID`, which runs the exact staged bytes — the original file is never re-read; drift in URL, columns or table index fails with `APPROVAL_MISMATCH`. Built-in sources keep the plain `--yes` behavior and return the same redacted preview envelope (without `preview_id`).
 
 **Interpreter note:** install and run with the same Python environment. On Windows, `py -3 -m pip install -e <skill-directory>` is an alternative if `py` is configured.
 
@@ -85,7 +89,7 @@ data-fetcher --source <source> --query <query> --yes --non-interactive --json-ou
 ### Error Contract
 Failures return `{"status": "error", "code": "<STABLE_CODE>", "message": "<prose with recovery hints>"}` and exit 1.
 An error envelope may also include `warnings` if cleanup failed; the extraction error retains its original code.
-Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `NOT_FOUND`, `UNSUPPORTED_SOURCE`, `UNSUPPORTED_CONVERSION`, `DEPENDENCY_MISSING`, `BLOCKED_URL`, `SIZE_LIMIT`, `OUTPUT_LOCKED`, `ABORTED`, `INTERACTIVE_REQUIRED`, `ARG_MISSING`, `INVALID_OUTPUT`, `REGISTRY_INVALID`, `REGISTRY_BUSY`, `SOURCE_EXISTS`, `INTERNAL`.
+Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERROR`, `PROVIDER_UNAVAILABLE`, `NOT_FOUND`, `UNSUPPORTED_SOURCE`, `UNSUPPORTED_CONVERSION`, `DEPENDENCY_MISSING`, `BLOCKED_URL`, `SIZE_LIMIT`, `OUTPUT_LOCKED`, `ABORTED`, `INTERACTIVE_REQUIRED`, `ARG_MISSING`, `ARG_INVALID`, `INVALID_OUTPUT`, `REGISTRY_INVALID`, `REGISTRY_BUSY`, `SOURCE_EXISTS`, `INTERNAL`, plus the custom-approval chain: `APPROVAL_REQUIRED`, `APPROVAL_MISMATCH`, `PREVIEW_EXPIRED`, `PREVIEW_TAMPERED`, `PREVIEW_NOT_FOUND`, `EXTRACTOR_REJECTED`, `SCRIPT_HASH_MISMATCH`, `WORKER_TIMEOUT`, `WORKER_CRASHED`, `WORKER_POLICY_VIOLATION`, `WORKER_RESULT_INVALID`, `WORKER_SETUP_FAILED`, `IPC_APPROVAL_FIELD_REJECTED`, `IPC_UNREPRESENTABLE_VALUES`.
 
 **Exit codes:** `0` success · `1` error (envelope on stdout) · `2` argparse usage (shell-level) · `3` engine/provider failed to load (`PROVIDER_UNAVAILABLE` or `STARTUP_FAILURE`) , the JSON envelope is guaranteed even then. The provider registry is lazy: one broken optional dependency affects only its own source.
 
@@ -101,7 +105,7 @@ Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERRO
 | `coingecko` | coin id or symbol (auto-resolved); no key needed, free tier caps history at 365 days | `bitcoin`, `sol` |
 | `openml` | dataset name fragment (exact match wins, then smallest; ranked candidates shown) or numeric dataset ID | `iris`, `61` |
 | `rdatasets` | package/dataset, unique dataset name, or search words; no key needed; ambiguous searches list choices | `datasets/iris`, `datasets/mtcars` |
-| `github` | free text: searches repos, then prefers the largest CSV within a 50 MB advisory budget; may select the smallest larger CSV with a warning | `covid` |
+| `github` | free text: searches repositories, then walks the git tree for CSV paths and fetches CSV blobs only — never Issues or PRs; prefers the largest CSV within a 50 MB advisory budget and may select the smallest larger CSV with a warning | `covid` |
 | `datagov` | free text (GSA Catalog API v4; key optional, DEMO_KEY fallback) | `climate` |
 | `airbnb` | city name on insideairbnb.com | `amsterdam` |
 | `custom` | full URL , assess and fetch a supported public file/table | `https://.../data.csv` |
@@ -111,13 +115,15 @@ Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERRO
 * `--source` / `--query`: target platform and query (semantics above).
 * `--outdir DIR`: destination root. **Set it explicitly** , the default is `<current working directory>/data_raw`, which varies by shell.
 * `--rows N`: save the first N rows; transfer savings depend on the provider (recorded as `truncation` when known).
-* `--preview-only`: `mode: preview`, `sample` (up to five rows/30 displayed columns), full column names, `transfer_scope`, warnings and `output_path: null`; no saved dataset/profile/manifest or source registration.
+* `--preview-only`: `mode: preview`, `preview_path` (human-only `_human_preview.md` with the escaped 5-row sample, all column names, source URL and transfer notes), `rows_sampled`, `column_count`, `dtypes`, `transfer_scope`, warnings and `output_path: null`; no sample cell values or column names in the envelope; no saved dataset/profile/manifest or source registration. Custom previews also return `preview_id`.
+* `--extractor-script PATH`: run a reviewed bespoke extractor file for `--source custom`. Requires the bounded preview first; combine with `--approve-preview` for the full fetch (never both flags at once — approval always runs the staged bytes).
+* `--approve-preview ID`: approve a bounded preview by ID for a non-interactive custom full fetch (`--source custom` or a saved `custom_*` key). Runs the extractor bytes staged with that preview; URL/columns/table drift fails with `APPROVAL_MISMATCH`.
 * `--analyze-only`: custom assessment with `mode: analysis`; no generated script or extraction.
 * `--columns a,b`: require and retain exact column names; missing fields fail with `NOT_FOUND`.
 * `--table INDEX`: zero-based simple HTML table selection for external sources.
 * `--goal TEXT`: request context only, not a content filter.
 * `--output-format FORMAT`: convert the fetched CSV; envelope includes `converted_file`. CSV remains available.
-* `--save-source NAME`: explicit consent to register a successful full custom fetch, or pair with `--keep-source ID` to resolve a pending choice.
+* `--save-source NAME`: explicit consent to register a successful full custom fetch (the exact staged bytes that were previewed and approved), or pair with `--keep-source ID` to resolve a pending choice.
 * `--defer-source-choice`: keep a pending custom extractor after full fetch; envelope includes `pending_source_id`. Ask the user, then use `--keep-source ID --save-source NAME` or `--discard-source ID`.
 * `--non-interactive`: runs without any input prompts (wizard, confirmations).
 * `--yes`: auto-approves pre-flight downloads (full row extraction unless `--rows`).
@@ -147,11 +153,14 @@ scripts/
 ├── base.py                 # Compatible provider hooks; delegates to composed use cases
 ├── core/                   # Effect-free request, state, artifact metadata and errors
 ├── application/            # Fetch lifecycle, frame policy and source retention
-├── adapters/               # Terminal, payload, artifact, registry and conversion effects
+├── adapters/               # Terminal, payload, artifact, registry, conversion,
+│                           # sanitization, extractor protocol and subprocess runner
 ├── composition.py          # Selects concrete adapters outside application policy
 ├── factory.py              # Lazy provider registry (per-source isolation)
 ├── errors.py               # DataFetchError: stable error codes + exit codes
 ├── http_utils.py           # Session pooling, retries, pacing, cost metering
+├── net_guard.py            # Global-only IP policy and URL validation (SSRF guard)
+├── isolated_worker.py      # Out-of-process extractor worker (audit hooks)
 ├── format_alchemy.py       # CSV/Excel/SQLite/JSON/Parquet conversions
 ├── provision.py            # Directory provisioning
 ├── config.py               # Credential wizard and lookup

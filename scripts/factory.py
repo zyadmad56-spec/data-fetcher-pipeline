@@ -27,18 +27,29 @@ _LAZY_REGISTRY: Dict[str, Tuple[str, str]] = {
     "rdatasets": ("scripts.fetchers.rdatasets", "RdatasetsFetcher"),
 }
 
-def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str]) -> "BaseFetcher":
-    """Resolve a source name to its fetcher class (lazy import) and instantiate it."""
+def get_fetcher(source: str, query: str, outdir: str, config: Dict[str, str],
+                extractor_bytes: bytes | None = None,
+                approved_receipt=None) -> "BaseFetcher":
+    """Resolve a source name to its fetcher class (lazy import) and instantiate it.
+
+    ``extractor_bytes`` / ``approved_receipt`` feed the custom-source approval
+    chain (``--extractor-script`` / ``--approve-preview``); built-in providers
+    ignore them. Saved ``custom_*`` sources receive only the approved receipt:
+    their registered bytes stay the single source of truth.
+    """
     spec = _LAZY_REGISTRY.get(source.lower())
     if spec is None:
         if source.lower() == 'custom':
             from scripts.custom_source import CustomFetcher
-            return CustomFetcher(query, outdir, config)
+            return CustomFetcher(query, outdir, config,
+                                 extractor_bytes=extractor_bytes,
+                                 approved_receipt=approved_receipt)
         from scripts.source_registry import load_sources
         descriptor = load_sources().get(source.lower())
         if descriptor:
             from scripts.custom_source import CustomFetcher
-            return CustomFetcher(query, outdir, config, source=source.lower(), descriptor=descriptor)
+            return CustomFetcher(query, outdir, config, source=source.lower(),
+                                 descriptor=descriptor, approved_receipt=approved_receipt)
         from scripts.fetchers.generic import GenericFetcher
         return GenericFetcher(query, outdir, config, source=source)
 

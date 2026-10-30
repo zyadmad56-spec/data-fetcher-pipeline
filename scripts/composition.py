@@ -1,4 +1,5 @@
 """Only this outer module selects concrete fetch, terminal and storage adapters."""
+from pathlib import Path
 
 
 def interaction_for(state):
@@ -14,6 +15,40 @@ def fetch_use_case(fetcher):
         FetcherProvider(fetcher), interaction_for(fetcher), FetcherArtifacts(fetcher)))
 
 
+def resolve_custom_inputs(args):
+    """Resolve ``--extractor-script`` / ``--approve-preview`` into in-memory inputs.
+
+    Returns ``(extractor_bytes, approved_receipt)``. Extractor bytes are read
+    from disk exactly once and AST-reviewed here. An approved preview loads
+    its receipt TOGETHER WITH the staged bytes stored beside it in the
+    receipt store, so an approved fetch never re-reads the original extractor
+    file from disk.
+    """
+    from scripts.errors import DataFetchError
+    extractor_bytes = None
+    approved = None
+    script_flag = getattr(args, 'extractor_script', None)
+    approve_flag = getattr(args, 'approve_preview', None)
+    if script_flag:
+        from scripts.adapters.script_runner import ExtractorRejectedError, inspect_extractor_ast
+        try:
+            extractor_bytes = Path(script_flag).read_bytes()
+        except OSError as exc:
+            raise DataFetchError(f'Extractor script could not be read: {exc}',
+                                 code='ARG_MISSING') from exc
+        try:
+            inspect_extractor_ast(extractor_bytes)
+        except ExtractorRejectedError as exc:
+            raise DataFetchError(f'Extractor bytes do not pass the safety review: {exc}',
+                                 code='EXTRACTOR_REJECTED') from exc
+    if approve_flag:
+        from scripts.source_registry import load_preview_receipt
+        approved, staged = load_preview_receipt(approve_flag)
+        if extractor_bytes is None:
+            extractor_bytes = staged
+    return extractor_bytes, approved
+
+
 def retain_custom_source(fetcher, args):
     from scripts.adapters.registry import LocalSourceRegistry
     from scripts.adapters.terminal import TerminalInteraction
@@ -23,7 +58,13 @@ def retain_custom_source(fetcher, args):
     name = args.save_source
     if not (args.non_interactive or args.yes or args.json_output):
         name = TerminalInteraction().retention_name(fetcher.resolved_title) or name
-    choice = RetentionRequest(name, args.query, fetcher.script_path, args.defer_source_choice)
+    # Register the STAGED bytes the fetcher locked in memory (single-read
+    # contract: extractor_bytes, generated-template and registered-script
+    # modes all land here); fall back to the locked path if bytes are absent.
+    script = getattr(fetcher, 'script_bytes', None)
+    if script is None:
+        script = getattr(fetcher, 'script_path', None)
+    choice = RetentionRequest(name, args.query, script, args.defer_source_choice)
     registered, pending = retain_source(choice, LocalSourceRegistry())
     if registered:
         print(f'[Saved source] {registered} is now available in --list-sources.')
