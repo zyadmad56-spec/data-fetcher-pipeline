@@ -4,6 +4,61 @@ This document describes, honestly, what the pipeline does and does not protect
 against. It makes no claims about what any security scanner may or may not
 report.
 
+## What this tool fetches, and where the content goes
+
+The pipeline fetches **data only**: dataset files (CSV/TSV/XLSX/Parquet/JSON),
+HTML tables, and documented provider API responses. Fetched content is parsed,
+hashed, and saved as data. It is never executed, never scanned for or treated as
+instructions, and never forwarded to any model or third party — the CLI has no
+model integration, no telemetry, and no outbound call other than the fetches
+described under *Network egress* below.
+
+**Third-party content reaches the human only.** Every fetched payload path ends
+in on-disk artifacts the human opens themselves: `_human_preview.md` (the
+bounded preview), `*_raw.csv` (the normalized dataset), `*_source_*` (retained
+original bytes), `*_description.md` (the profile), and `manifest.jsonl`.
+Agent-facing channels carry metadata only: row/column counts, dtypes, file
+paths, SHA-256 hashes, transfer scope, HTTP status codes, and sanitized,
+length-capped warnings. Progress prints from providers are captured in memory
+in `--json-output` mode (16 KiB cap) and never reach stdout or stderr.
+
+**Code execution is receipt-gated and separate from fetching.** The only code
+that runs beyond this repository's own modules is a custom extractor written
+and reviewed locally by the agent/human — never downloaded from a target site.
+It executes out-of-process only after the human approved a bounded preview:
+non-interactive full fetches must present `--approve-preview PREVIEW_ID` (with
+`--yes`), and the approval runs the exact bytes staged with that preview, never
+the original file. There is no remote configuration, no remote instruction
+loading, and no runtime code download anywhere in the pipeline.
+
+## Endpoints and allowed sources
+
+Built-in fetches target only the documented vendor endpoints of the supported
+platforms:
+
+- `api.github.com` (repository search + git trees + CSV blobs) and
+  `raw.githubusercontent.com` (CSV blob download, token withheld — see
+  *GitHub source scope*)
+- `insideairbnb.com` and its subdomains (index page + `.csv.gz` downloads)
+- `api.gsa.gov/technology/datagov/v4` (Data.gov GSA Catalog API v4; the
+  `api.data.gov` host appears only as the key-portal reference) — the CSV
+  distribution URL selected from catalog results is user-chosen content and is
+  validated by the public-URL guard before any request
+- `api.worldbank.org`, `ec.europa.eu` (Eurostat), `api.coingecko.com`
+- `api.stlouisfed.org` and `fred.stlouisfed.org` (FRED)
+- `www.sec.gov` and `data.sec.gov` (SEC EDGAR)
+- `www.openml.org`, `www.kaggle.com`, `finance.yahoo.com` (metadata page URL;
+  the yfinance SDK uses its own Yahoo endpoints)
+- `vincentarelbundock.github.io` (Rdatasets)
+
+Everything else is a **user-chosen** custom URL. Custom targets and
+Data.gov-distribution URLs run on the dedicated public-only transport described
+below (scheme, embedded-credential, control-character, and public-IP checks on
+every hop and DNS answer). There are no undocumented fetch endpoints: a custom
+fetch downloads only from the single URL the caller passed, built-in fetchers
+talk only to the hosts listed above, and there is no remote configuration or
+instruction loading anywhere in the pipeline.
+
 ## Custom extractor execution
 
 Custom extraction (the `custom` source, saved `custom_*` sources, and
@@ -56,7 +111,13 @@ URL, transfer notes) to a private `_human_preview.md` artifact and returns a
 JSON envelope with **zero sample cell values and zero column names**. Error
 messages reaching JSON envelopes are scrubbed (URL credentials/query strings,
 response bodies, offending-CSV-row text removed; length-capped; recovery hint
-appended). Escaping is presentation-layer only — dataset cell values are never
+appended). Two sanitized plain-text residuals remain by design and are stated
+here rather than hidden: a failure may quote a capped excerpt of the isolated
+worker's stderr (an exception summary, escape-neutralized, single line, hard
+length cap), and metadata fields such as `resolved_title` or `source_url` can
+carry a provider-supplied plain-text title/URL (escape-neutralized, never
+markup-active). Dataset cell values never reach those channels. Escaping is
+presentation-layer only — dataset cell values are never
 modified. Note honestly: a file on disk cannot stop a host agent with explicit
 file-read tools from opening `_human_preview.md`; the conversation workflow
 forbids it, and enforcement of "human alone" for automatic channels
@@ -87,9 +148,15 @@ clients and are outside this instrumentation (`metrics_scope` discloses this).
 ## GitHub source scope
 
 GitHub discovery performs repository search, a recursive git-tree walk, and
-CSV blob downloads. It never reads Issues or pull requests. The optional
-`gh auth token` is attached only to `api.github.com` API calls — it is
-withheld from `raw.githubusercontent.com` and every other host.
+CSV blob downloads. It never reads Issues or pull requests. The token is
+resolved from `GITHUB_TOKEN` (environment or config) first and falls back to
+`gh auth token` via the local `gh` CLI; the `gh` output is captured in memory
+and never echoed. The resolved token exists only in memory and in the
+`Authorization` header: it is attached exclusively to `api.github.com` API
+calls, withheld from `raw.githubusercontent.com` and every other host, never
+printed, logged, or persisted, and those API calls are made with redirects
+disabled so a redirect can never carry the header to another host. Error paths
+report HTTP status codes only — provider bodies and headers are not echoed.
 
 ## Spreadsheet formula handling
 
@@ -100,6 +167,18 @@ modified. Plain **CSV** files carry no type metadata: a hostile CSV cell opened
 directly in a spreadsheet application may still be interpreted as a formula by
 that application. The pipeline does not mutate CSV bytes; treat untrusted CSVs
 with your spreadsheet application's import-time protections.
+
+## Kaggle archive hardening
+
+Kaggle datasets arrive as ZIP archives and are treated as untrusted. Before a
+single member is written out, the archive is validated fail-fast: member count
+and total uncompressed size are capped, and `..`-traversal, absolute paths,
+drive-letter components, and symlink entries are rejected. Violations raise
+coded errors with stable message prefixes (`SIZE_LIMIT: Kaggle …`,
+`BLOCKED: Kaggle …`) so agents and humans can branch on them. Downloads run in
+a temporary directory and the ambient `KAGGLE_USERNAME`/`KAGGLE_KEY`
+environment values are restored exactly after every attempt, so credentials
+never persist into the host process.
 
 ## Verified residual limits
 

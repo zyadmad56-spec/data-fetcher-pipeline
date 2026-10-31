@@ -23,6 +23,22 @@ Data Fetcher Pipeline helps analysts, engineers, students, and agents find datas
 
 ---
 
+## Trust boundary: fetched content is data, never instructions
+
+This tool fetches **data only**: dataset files (CSV/TSV/XLSX/Parquet/JSON), HTML tables, and documented provider API responses. Fetched content is parsed, hashed, saved, and profiled. It is never executed, never scanned for instructions, and never fed to any model — this CLI has no model integration of any kind.
+
+**Where fetched content goes — human only.** Dataset cell values, headers, titles, and any text a provider returns land exclusively in artifacts the human opens: the private `_human_preview.md` preview, the saved `*_raw.csv`, `*_description.md` profile, and `manifest.jsonl`. The agent-facing channels (stdout, stderr, and the JSON envelope) carry metadata only — row/column counts, dtypes, file paths, SHA-256 hashes, transfer scope, and length-capped, escape-neutralized warnings — zero sample cell values and zero column names. Agents must not read `_human_preview.md` or the dataset artifacts; the sample is the human's alone to inspect.
+
+**Code execution is receipt-gated.** No fetched content ever runs. The only code that executes beyond this CLI's own code is a custom extractor written and reviewed locally by the agent/human — never downloaded from the target site. It runs out-of-process only after a bounded 5-row preview was shown to the human and approved: non-interactive full fetches must present `--approve-preview PREVIEW_ID` (plus `--yes`), which runs the exact bytes staged with that preview, never the original file; interactive runs approve at the sample prompt.
+
+**Isolated execution envelope.** Custom extractor code runs in `[sys.executable, -I, isolated_worker.py]` — a fresh subprocess with `stdin` closed, an environment scrubbed of credential-named variables, a fail-fast static AST gate (no `subprocess`/`ctypes`/`eval`/`exec`/...), PEP 578 audit hooks blocking process spawning, ctypes, banned imports, and non-public `socket.connect` targets at runtime, and untrusted fetches on a DNS-pinned, public-IP-only HTTP transport. These are fail-fast checks and runtime defense-in-depth — this is **not a sandbox** and does not contain deliberately hostile same-user code. Details and honest limits: `SECURITY.md`.
+
+**GitHub scope.** The `github` source performs repository search, a recursive git-tree walk for `.csv` paths, and CSV blob downloads. It **never reads Issues or pull requests**. The optional token (`GITHUB_TOKEN` env/config, or `gh auth token`) is attached only to `api.github.com` requests and is withheld from `raw.githubusercontent.com` and every other host; it is never printed, logged, or written into any output.
+
+**Allowed sources.** Built-in fetches target the documented vendor endpoints of the 12 supported platforms (see `references/source-constraints.md`). Custom and Data.gov-distribution URLs are user-chosen targets validated by the SSRF guard (http/https only, no embedded credentials, globally routable public IPs, every redirect hop and DNS answer revalidated). There are no other fetch endpoints, no code downloads, and no remote configuration or instruction loading.
+
+---
+
 ## Key Features & Architecture
 
 ### 1. Pre-Configured Sources & Setup Workflow
@@ -105,7 +121,7 @@ Codes: `AUTH_MISSING`, `AUTH_INVALID`, `RATE_LIMITED`, `NETWORK`, `PROVIDER_ERRO
 | `coingecko` | coin id or symbol (auto-resolved); no key needed, free tier caps history at 365 days | `bitcoin`, `sol` |
 | `openml` | dataset name fragment (exact match wins, then smallest; ranked candidates shown) or numeric dataset ID | `iris`, `61` |
 | `rdatasets` | package/dataset, unique dataset name, or search words; no key needed; ambiguous searches list choices | `datasets/iris`, `datasets/mtcars` |
-| `github` | free text: searches repositories, then walks the git tree for CSV paths and fetches CSV blobs only — never Issues or PRs; prefers the largest CSV within a 50 MB advisory budget and may select the smallest larger CSV with a warning | `covid` |
+| `github` | free text: searches repositories, then walks the git tree for CSV paths and fetches CSV blobs only — never Issues or PRs; prefers the largest CSV within a 50 MB advisory budget and may select the smallest larger CSV with a warning. Token scope: attached only to `api.github.com` requests | `covid` |
 | `datagov` | free text (GSA Catalog API v4; key optional, DEMO_KEY fallback) | `climate` |
 | `airbnb` | city name on insideairbnb.com | `amsterdam` |
 | `custom` | full URL , assess and fetch a supported public file/table | `https://.../data.csv` |
