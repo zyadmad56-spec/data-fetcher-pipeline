@@ -435,8 +435,7 @@ def test_b9_worker_write_confinement_read_roots_and_scrubbed_env(tmp_path):
     home_value = str(frame["home"].iloc[0])
     assert "dfp-worker" in home_value and home_value.endswith("home")
     real_home = str(Path.home())
-    assert not home_value.startswith(real_home[: len(real_home) // 2]) or \
-        "dfp-worker" in home_value
+    assert not home_value.lower().startswith(real_home.lower())
 
 
 def os_devnull_in(policy):

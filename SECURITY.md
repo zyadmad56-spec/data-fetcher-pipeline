@@ -55,9 +55,9 @@ Everything else is a **user-chosen** custom URL. Custom targets and
 Data.gov-distribution URLs run on the dedicated public-only transport described
 below (scheme, embedded-credential, control-character, and public-IP checks on
 every hop and DNS answer). There are no undocumented fetch endpoints: a custom
-fetch downloads only from the single URL the caller passed, built-in fetchers
-talk only to the hosts listed above, and there is no remote configuration or
-instruction loading anywhere in the pipeline.
+fetch downloads only from the caller-passed URL and its revalidated redirect
+hops, built-in fetchers talk only to the hosts listed above, and there is no
+remote configuration or instruction loading anywhere in the pipeline.
 
 ## Custom extractor execution
 
