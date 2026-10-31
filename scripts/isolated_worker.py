@@ -5,6 +5,26 @@ Run as ``[sys.executable, '-I', isolated_worker.py, job.json]`` from
 were staged by the runner, executes ``extract_frame`` under PEP 578 audit
 hooks, and returns the frame as CSV + ``WorkerResult`` JSON — never a pickle.
 
+This module is the LAST link of the receipt-gated execution chain. Extractor
+bytes reach this file only after ``scripts/custom_source.py`` has proven human
+approval of a bounded preview — the interactive ``_pending_receipt`` minted at
+the sample prompt, or the ``--approve-preview ID`` flag validated against the
+receipt store. Missing approval fails closed upstream with
+``APPROVAL_REQUIRED``; a receipt that drifted from this fetch (staged bytes,
+URL, columns, table index) fails with ``APPROVAL_MISMATCH``; an expired
+receipt fails with ``PREVIEW_EXPIRED``. The staged bytes are read exactly
+once and pinned by SHA-256; this worker re-verifies the hash
+(``SCRIPT_HASH_MISMATCH``) and re-runs the static AST gate
+(``EXTRACTOR_REJECTED``) before executing anything, so the single
+``compile()``/``exec()`` site in ``main()`` below is the only dynamic code
+execution site in the entire pipeline.
+
+The parent process adds further layers before this file ever starts: the
+AST gate runs pre-spawn, the child environment is scrubbed of
+credential-shaped variables with HOME/TMP redirected into the disposable
+workspace, stdout/stderr capture is capped at 64 KiB per stream, and the
+whole job (interpreter start included) is bounded by the request deadline.
+
 Defense-in-depth layers installed here, in order:
 
 1. Heavy dependencies (pandas/requests/bs4/openpyxl) are pre-imported BEFORE
@@ -30,10 +50,10 @@ are caught by their *usage* audit events (``ctypes.dlopen`` and friends)
 rather than the ``import`` event — both layers exist for that reason.
 
 PARITY NOTE: ``_is_public_ip`` deliberately duplicates the global-only IP
-policy of ``scripts/net_guard.py`` (owned by Agent A) because this worker runs
-``-I`` isolated and must not import pipeline modules beyond the data
-protocol. Keep the two in sync (unwrap ``ipv4_mapped``/``sixtofour``/``teredo``,
-then require ``is_global``).
+policy of ``scripts/net_guard.py`` (the pipeline's URL/DNS egress guard on its
+own library fetch paths) because this worker runs ``-I`` isolated and must not
+import pipeline modules beyond the data protocol. Keep the two in sync (unwrap
+``ipv4_mapped``/``sixtofour``/``teredo``, then require ``is_global``).
 """
 from __future__ import annotations
 
@@ -108,7 +128,7 @@ class WorkerPolicyViolation(RuntimeError):
 
 
 def _is_public_ip(ip) -> bool:
-    """PARITY with scripts/net_guard.py (Agent A): global-only, unwrapped."""
+    """PARITY with scripts/net_guard.py: global-only, unwrapped, classic-blocked."""
     if isinstance(ip, ipaddress.IPv6Address):
         if ip.ipv4_mapped is not None:
             ip = ip.ipv4_mapped
@@ -118,7 +138,14 @@ def _is_public_ip(ip) -> bool:
             server, client = ip.teredo
             return _is_public_ip(server) and _is_public_ip(client)
     try:
-        return ip.is_global
+        # Classic blocklist in addition to ``is_global``: special ranges whose
+        # classification differs across Python versions (notably 100.64.0.0/10
+        # shared space, and multicast which recent CPython classifies global)
+        # can never slip through. Mirrors scripts/net_guard.py.
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_unspecified or ip.is_multicast):
+            return False
+        return bool(ip.is_global)
     except ValueError:  # pragma: no cover - malformed address object
         return False
 
@@ -351,6 +378,13 @@ def main(argv: list[str]) -> int:
         return 0
 
     try:
+        # THE single dynamic-execution site of the whole pipeline: compile +
+        # exec of the receipt-gated, hash-verified extractor entry point.
+        # Guards already applied to these exact bytes in THIS process: the
+        # SHA-256 re-check and the AST gate above; the PEP 578 audit hook has
+        # been active since before the staged script was loaded. Deliberately
+        # plain and unobfuscated so code-reading scanners see exactly what
+        # runs here; no second site exists anywhere in the pipeline.
         module_vars: dict = {
             '__name__': 'dfp_generated_extractor',
             '__file__': str(workspace / SCRIPT_NAME),

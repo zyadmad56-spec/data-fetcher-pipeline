@@ -1,15 +1,34 @@
 """Custom sources participate in the same preview/validate/save lifecycle.
 
-Execution model (Phase 9): extractors never run in this process. ``scout``
-locks the extractor bytes (saved source, constructor-provided bytes, or the
-generated template) into memory; every execution goes through
+Execution model: extractors never run in this process. ``scout`` locks the
+extractor bytes (saved source, constructor-provided bytes, or the generated
+template) into memory exactly once — single read + SHA-256 pin in
+``script_sha256`` — and every execution goes through
 ``SubprocessExtractorRunner`` with those exact bytes. Disk edits after scout
-have zero effect. A full fetch requires a valid :class:`PreviewReceipt`
-binding script bytes + canonical URL + columns + table index; interactive
-flows create their receipt internally during the bounded preview and confirm
-it at the human approval prompt, while non-interactive runs must present one
-via the ``approved_receipt`` constructor parameter (the ``--approve-preview
-ID`` CLI flag wiring lands in a later wave; the parameter seam is ready).
+have zero effect. The runner stages the bytes into a disposable workspace and
+spawns ``[sys.executable, '-I']`` with a scrubbed child environment
+(credential-shaped variables stripped, HOME/TMP redirected into the
+workspace), the static AST gate (``inspect_extractor_ast``) applied pre-spawn,
+PEP 578 audit hooks inside the child, 64 KiB-capped output capture, a
+whole-job deadline and public-IP-only connect targets (parity with the
+pipeline's ``net_guard.py`` egress policy on its own library fetch paths).
+
+Receipt gate (fail closed): a FULL fetch requires a valid
+:class:`PreviewReceipt` binding script bytes + canonical URL + columns +
+table index. Interactive flows mint their receipt internally during the
+bounded (<= 5 rows) preview and confirm it at the human approval prompt
+(``_pending_receipt``); non-interactive runs must present one via the
+``--approve-preview ID`` CLI flag, wired through the ``approved_receipt``
+constructor parameter. Missing approval raises ``APPROVAL_REQUIRED``; any
+drift between the receipt and this fetch (bytes, URL, columns, table index)
+raises ``APPROVAL_MISMATCH``; an expired receipt raises ``PREVIEW_EXPIRED``;
+tampering with the receipt store fails closed with ``PREVIEW_TAMPERED``
+(``scripts/source_registry.load_preview_receipt``).
+
+HONEST SCOPE — these layers are fail-fast + defense-in-depth,
+NOT hostile-code containment: same-user code can in principle bypass static
+analysis and audit hooks, so the checks defend against accidents and
+hallucinated dangerous behaviour, not a committed attacker.
 """
 import tempfile
 from pathlib import Path
