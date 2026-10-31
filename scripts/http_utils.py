@@ -139,9 +139,17 @@ def request_with_retry(
         return max(0.0, deadline_sec - (time.monotonic() - started))
 
     def _sleep_bounded(seconds: float) -> None:
-        """Sleep for a backoff interval, clamped to the caller's deadline."""
+        """Sleep for a backoff interval, clamped to the caller's deadline.
+
+        With no budget left the sleep is skipped entirely (the loop top then
+        raises TIMEOUT); a zero-length sleep call here would be a second,
+        pointless time.sleep invocation.
+        """
         remaining = _remaining()
-        time.sleep(seconds if remaining is None else min(seconds, remaining) if remaining > 0 else 0.0)
+        if remaining is None:
+            time.sleep(seconds)
+        elif remaining > 0:
+            time.sleep(min(seconds, remaining))
 
     if public_only:
         validate_public_url(url)

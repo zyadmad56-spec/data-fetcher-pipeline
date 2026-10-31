@@ -93,10 +93,6 @@ def is_public_ip(address) -> bool:
     plain = _unwrap_tunneling(address)
     if _classic_blocked(plain) or not plain.is_global:
         return False
-    # A tunneled form whose original encoding itself flags as non-global is
-    # rejected too (defense in depth across ipaddress versions).
-    if plain is not address and _classic_blocked(address):
-        return False
     return True
 
 
