@@ -22,7 +22,8 @@ The pipeline separates fetch decisions from network requests, terminal prompts, 
 - **CSV and Markdown profiles:** Providers return tabular data with their own field names. Each saved CSV gets a `<dataset_name>_description.md` with source metadata, sample rows, missing-value counts, inferred types, and statistics. The pipeline does not align schemas across platforms.
 - **Local credentials:** Fetch commands read `~/.config/data-fetcher-pipeline/config.json`. This is a plain JSON file, with owner-only permissions where the operating system supports them. The repository contains `config_template.json` with empty values. Keep your filled config on your own computer and out of Git.
 - **Shared workflow:** The CLI handles output folders, previews, row limits, conversion, and source registration so each provider can focus on fetching data.
-- **Trust boundary:** The pipeline fetches data only — files, HTML tables, and documented provider API responses. Fetched content is parsed, hashed, and saved as data; it is never executed and never interpreted as instructions. Dataset values reach the human exclusively through on-disk artifacts (`_human_preview.md`, `*_raw.csv`, `*_description.md`, `manifest.jsonl`); agent-facing output (stdout, stderr, JSON envelopes) carries counts, paths, hashes and sanitized warnings — never sample cell values or column names. Custom extractor code is the only non-pipeline code that runs, it is written and reviewed locally (never downloaded from a site), and it executes out-of-process only after the human approves a bounded preview (`--approve-preview`), in an isolated `-I` subprocess with a scrubbed environment, a static AST gate, and runtime audit hooks — fail-fast defense-in-depth, not a sandbox. See `SECURITY.md`.
+- **Trust boundary:** The pipeline fetches data only: files, HTML tables, and documented provider API responses. Fetched content is parsed, hashed, and saved as data; it is never executed and never read as instructions. Dataset values reach the human through on-disk artifacts (`_human_preview.md`, `*_raw.csv`, `*_description.md`, `manifest.jsonl`); agent-facing output (stdout, stderr, JSON envelopes) carries counts, paths, hashes, and sanitized warnings, never sample cell values or column names. See `SECURITY.md`.
+- **Custom extractor execution:** The only non-pipeline code that runs is a custom extractor written and reviewed locally (never downloaded from a site). It executes out-of-process after the human approves a bounded preview (`--approve-preview`), inside an isolated `-I` subprocess with a scrubbed environment, a static AST gate, and runtime audit hooks. These checks are fail-fast defense-in-depth, not a sandbox.
 
 The pipeline does not impute missing values or clean data for analysis. Parsing can infer types and change text formatting in the normalized CSV, such as leading zeros. For direct CSV, TSV, and gzip downloads, the separate original file preserves the downloaded bytes.
 
@@ -58,20 +59,16 @@ registration removes its temporary script and preserves the dataset.
 
 For chat agents, follow [the conversation workflow](references/conversation-workflow.md).
 Use `--preview-only --yes --non-interactive --json-output` before asking for final
-approval. The preview JSON envelope carries **no sample cell values and no column
-names**: the human alone reads the sample from the private `_human_preview.md`
+approval. The preview JSON envelope carries no sample cell values and no column
+names: the human alone reads the sample from the private `_human_preview.md`
 artifact written beside the fetch, and agents must not read that file or the
-dataset artifacts. Fetched dataset content is delivered to the human this way and
-is treated as data, never as instructions; the agent channels stay metadata-only.
-Custom extraction runs out-of-process in an isolated worker;
-a bespoke extractor is passed with `--extractor-script PATH` (bounded preview
-first) and the approved full fetch presents `--approve-preview PREVIEW_ID`,
-which runs the exact staged bytes. Code execution therefore happens only behind
-that receipt gate — no fetched content is ever executed, and the pipeline never
-loads instructions or configuration from the network. CSV/TSV prefixes are
-bounded to 256 KB; SDK/compressed previews can need full transfer; custom
-previews run a bounded 5-row sample. Separate preview/fetch commands may
-transfer twice.
+dataset artifacts. Pass a bespoke extractor with `--extractor-script PATH`
+(bounded preview first) and the approved full fetch presents
+`--approve-preview PREVIEW_ID`, which runs the exact staged bytes. Code execution
+happens only behind that receipt gate, and the pipeline never loads instructions
+or configuration from the network. CSV/TSV prefixes are bounded to 256 KB;
+SDK/compressed previews can need full transfer; custom previews run a bounded
+5-row sample. Separate preview/fetch commands may transfer twice.
 
 `--source custom --query URL` now fetches supported public files/simple HTML tables
 through the normal CSV/profile/manifest pipeline. `--analyze-only` requests only
@@ -86,9 +83,9 @@ ask the user, then resolve the returned ID using `--keep-source ID --save-source
 "Platform Name" --json-output` or `--discard-source ID --json-output`. No second
 download is needed. Saved platforms appear beside built-ins in `--list-sources`,
 with checksum-checked scripts under `~/.config/data-fetcher-pipeline/source_scripts`.
-Corrupt descriptors and collisions fail explicitly. Extractor execution uses an
-out-of-process worker with fail-fast checks and runtime defense-in-depth — it is
-not a sandbox; see `SECURITY.md`.
+Corrupt descriptors and collisions fail explicitly. Extractor execution runs in
+an out-of-process worker with fail-fast checks and runtime defense-in-depth; it
+is not a sandbox. See `SECURITY.md`.
 
 ### Installation Strategy
 
