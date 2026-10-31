@@ -300,7 +300,10 @@ def _blocked_flags(address):
 def _is_public_ip(address):
     """True only for globally routable addresses (RFC 6598 shared space,
     loopback, link-local, private, reserved, multicast and tunneled forms of
-    all of them are rejected)."""
+    all of them are rejected). The verdict comes from the unwrapped address
+    only: classifying the original tunneled encoding instead would depend on
+    ipaddress version details (e.g. Python 3.10 lists the whole ::ffff:0:0/96
+    mapped range as private)."""
     if isinstance(address, str):
         try:
             address = ipaddress.ip_address(address.strip('[]'))
@@ -308,8 +311,6 @@ def _is_public_ip(address):
             return False
     plain = _unwrap_tunneling(address)
     if _blocked_flags(plain) or not plain.is_global:
-        return False
-    if plain is not address and _blocked_flags(address):
         return False
     return True
 

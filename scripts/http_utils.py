@@ -128,6 +128,7 @@ def request_with_retry(
     last_error: Optional[Exception] = None
     last_response: Optional[requests.Response] = None
     attempt = 0
+    budget_exhausted = False
     started = time.monotonic()
 
     def _deadline_exceeded() -> bool:
@@ -138,30 +139,36 @@ def request_with_retry(
             return None
         return max(0.0, deadline_sec - (time.monotonic() - started))
 
-    def _sleep_bounded(seconds: float) -> None:
+    def _sleep_bounded(seconds: float) -> bool:
         """Sleep for a backoff interval, clamped to the caller's deadline.
 
-        With no budget left the sleep is skipped entirely (the loop top then
-        raises TIMEOUT); a zero-length sleep call here would be a second,
-        pointless time.sleep invocation.
+        Returns True when the clamp fully consumed the remaining budget: the
+        wall-clock deadline is then spent by definition, regardless of timer
+        resolution on the host (a coarse clock can read the elapsed time a
+        hair under the deadline right after the sleep). With no budget left
+        the sleep is skipped entirely; the loop top raises TIMEOUT.
         """
         remaining = _remaining()
         if remaining is None:
             time.sleep(seconds)
-        elif remaining > 0:
-            time.sleep(min(seconds, remaining))
+            return False
+        if remaining <= 0:
+            return True
+        sleep_for = min(seconds, remaining)
+        time.sleep(sleep_for)
+        return sleep_for >= remaining
 
     if public_only:
         validate_public_url(url)
 
     while attempt < max_retries:
-        if _deadline_exceeded():
+        if _deadline_exceeded() or budget_exhausted:
             raise DataFetchError(
                 f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
                 code="TIMEOUT",
             )
         _enforce_host_pacing(url)
-        if _deadline_exceeded():
+        if _deadline_exceeded() or budget_exhausted:
             raise DataFetchError(
                 f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
                 code="TIMEOUT",
@@ -201,7 +208,7 @@ def request_with_retry(
                 retry_after = min(retry_after, 60.0)
                 logger.warning("Rate limited (429). Sleeping %.1fs before retry.", retry_after)
                 response.close()
-                _sleep_bounded(retry_after)
+                budget_exhausted = _sleep_bounded(retry_after) or budget_exhausted
                 continue
 
             if response.status_code >= 500:
@@ -212,7 +219,7 @@ def request_with_retry(
                 wait = backoff_base ** attempt
                 logger.warning("Server error %d. Retrying in %.1fs.", response.status_code, wait)
                 response.close()
-                _sleep_bounded(wait)
+                budget_exhausted = _sleep_bounded(wait) or budget_exhausted
                 continue
                 
             # Non-429 and non-5xx responses (e.g., 200, 401, 403, 404)
@@ -227,7 +234,7 @@ def request_with_retry(
                 break
             wait = backoff_base ** attempt
             logger.warning("Connection error on attempt %d. Retrying in %.1fs.", attempt, wait)
-            _sleep_bounded(wait)
+            budget_exhausted = _sleep_bounded(wait) or budget_exhausted
 
         except requests.Timeout as exc:
             last_error = exc
@@ -237,7 +244,7 @@ def request_with_retry(
                 break
             wait = backoff_base ** attempt
             logger.warning("Timeout on attempt %d. Retrying in %.1fs.", attempt, wait)
-            _sleep_bounded(wait)
+            budget_exhausted = _sleep_bounded(wait) or budget_exhausted
             
     if last_response is not None and last_response.status_code == 429:
         last_response.close()

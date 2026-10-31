@@ -298,7 +298,14 @@ def _apply_posix_rlimits(cpu_seconds: float) -> list[str]:
         warnings.append('resource module unavailable; no CPU/fd limits applied')
         return warnings
     try:
-        limit = max(int(cpu_seconds), 1)
+        # The runner enforces the wall-clock deadline from the parent side and
+        # must always win the race against the CPU-limit signal: a spinning
+        # extractor on a platform that enforces RLIMIT_CPU (macOS) would
+        # otherwise die of SIGXCPU at almost exactly the wall-clock deadline
+        # and be classified WORKER_CRASHED instead of WORKER_TIMEOUT. Keep the
+        # CPU limit strictly beyond the wall-clock budget; it stays as a
+        # backstop in case the runner itself cannot act.
+        limit = max(int(cpu_seconds), 1) + 5
         resource.setrlimit(resource.RLIMIT_CPU, (limit, limit + 1))
     except (OSError, ValueError, OverflowError):
         warnings.append('RLIMIT_CPU could not be applied')
