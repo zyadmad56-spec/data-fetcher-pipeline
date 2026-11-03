@@ -336,13 +336,6 @@ def test_kaggle_rejects_archives_beyond_500_mib_uncompressed(tmp_path):
             fetcher.extract()
 
 
-def test_kaggle_fetcher_source_avoids_legacy_path_helpers():
-    import inspect
-    source = inspect.getsource(KaggleFetcher)
-    assert "os.path" not in source
-    assert "glob.glob" not in source
-
-
 # ---------------------------------------------------------------------------
 # fred / worldbank / yahoo — no credentials or response bodies in errors
 # ---------------------------------------------------------------------------

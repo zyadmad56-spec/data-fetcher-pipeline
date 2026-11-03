@@ -407,8 +407,10 @@ def test_worker_attack_subprocess_use_fails_closed():
             subprocess.Popen(['echo', 'pwned'])
             return pd.DataFrame({'v': [1]})
     """)
+    inspect_extractor_ast(script.encode('utf-8'))  # The attack passes the static gate.
     runner, result = run_attack(script)
     assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
+    assert not runner.last_payload_csv
     assert_parent_healthy()
 
 
@@ -422,8 +424,10 @@ def test_worker_attack_ctypes_use_fails_closed():
             ctypes.CDLL('user32.dll' if os.name == 'nt' else 'libc.so.6')
             return pd.DataFrame({'v': [1]})
     """)
+    inspect_extractor_ast(script.encode('utf-8'))  # The attack passes the static gate.
     runner, result = run_attack(script)
     assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
+    assert not runner.last_payload_csv
     assert_parent_healthy()
 
 

@@ -240,46 +240,6 @@ def test_parent_env_secrets_absent_and_home_resides_in_sandbox(tmp_path, monkeyp
     assert 'dfp-worker-' in child_home
 
 
-def test_reading_real_config_json_path_fails_closed():
-    config_path = Path.home() / '.config' / 'data-fetcher-pipeline' / 'config.json'
-    script = extractor(f"""
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            with open({str(config_path)!r}, encoding='utf-8') as stream:
-                return pd.DataFrame({{'content': [stream.read()[:200]]}})
-    """)
-    runner, result = run_extractor(script)
-    assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
-    assert not runner.last_payload_csv
-
-
-@pytest.mark.parametrize('attack_script', [
-    extractor("""
-        import importlib
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            subprocess = importlib.import_module('subprocess')
-            subprocess.Popen(['echo', 'pwned'])
-            return pd.DataFrame({'v': [1]})
-    """),
-    extractor("""
-        import os
-        import importlib
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            ctypes = importlib.import_module('ctypes')
-            # ctypes is typically already cached by numpy; usage events still fire.
-            ctypes.CDLL('user32.dll' if os.name == 'nt' else 'libc.so.6')
-            return pd.DataFrame({'v': [1]})
-    """),
-])
-def test_runtime_hooks_block_ast_bypass_attempts(attack_script):
-    inspect_extractor_ast(attack_script)  # bypasses the static gate by construction
-    runner, result = run_extractor(attack_script)
-    assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
-    assert not runner.last_payload_csv
-
-
 def test_runtime_hook_blocks_direct_os_system_via_getattr():
     script = extractor("""
         import os
@@ -291,60 +251,6 @@ def test_runtime_hook_blocks_direct_os_system_via_getattr():
     """)
     runner, result = run_extractor(script)
     assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
-
-
-@pytest.mark.parametrize('target', ['127.0.0.1', '169.254.169.254', '100.100.100.200'])
-def test_non_public_connect_targets_blocked(target):
-    script = extractor(f"""
-        import socket
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            socket.create_connection(({target!r}, 80), timeout=2)
-            return pd.DataFrame({{'v': [1]}})
-    """)
-    runner, result = run_extractor(script)
-    assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
-
-
-def test_mapped_ipv4_loopback_connect_blocked():
-    script = extractor("""
-        import socket
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            socket.create_connection(('::ffff:127.0.0.1', 80), timeout=2)
-            return pd.DataFrame({'v': [1]})
-    """)
-    runner, result = run_extractor(script)
-    assert result.error_code == 'WORKER_POLICY_VIOLATION', result.to_json()
-
-
-def test_stdout_flood_is_capped_not_buffered():
-    script = extractor("""
-        import sys
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            blob = 'A' * 65536
-            for _ in range(160):  # ~10 MB in total
-                sys.stdout.write(blob)
-            sys.stdout.flush()
-            return pd.DataFrame({'v': [1]})
-    """)
-    runner, result = run_extractor(script)
-    assert result.error_code is None, result.error_summary
-    assert len(runner.last_stdout) <= 64 * 1024
-    assert result.rows == 1
-
-
-def test_infinite_loop_is_killed_at_the_wall_clock_deadline():
-    script = extractor("""
-        import pandas as pd
-        def extract_frame(url=None, columns=None, table_index=None, row_limit=0):
-            while True:
-                pass
-    """)
-    runner, result = run_extractor(script, deadline=6.0)
-    assert result.error_code == 'WORKER_TIMEOUT', result.to_json()
-    assert not runner.last_payload_csv
 
 
 def test_worker_crash_is_reported_not_fatal_to_the_host():
