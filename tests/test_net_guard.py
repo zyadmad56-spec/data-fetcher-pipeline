@@ -549,13 +549,26 @@ def test_template_accepts_small_legitimate_xlsx(tmp_path: Path):
 
 
 def test_template_transfer_deadline_aborts(tmp_path: Path):
-    module = _template_module(tmp_path)
-    module["extract_frame"].__globals__["TRANSFER_DEADLINE_SECONDS"] = 0.05
-    module["extract_frame"].__globals__["_robots_allowed"] = lambda url: True
+    fetch = _template_module(tmp_path)["_fetch_with_retry"]
+    elapsed = 0.0
+
+    def advance_clock(seconds):
+        nonlocal elapsed
+        elapsed += seconds
+
+    sleep = MagicMock(side_effect=advance_clock)
+    fetch.__globals__.update(
+        TRANSFER_DEADLINE_SECONDS=1.0,
+        _robots_allowed=lambda url: True,
+        time=SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep),
+    )
     with patch("socket.getaddrinfo", return_value=PUBLIC_DNS), \
-            patch("requests.get", side_effect=requests.Timeout("stalled")):
+            patch("requests.get", side_effect=requests.Timeout("stalled")) as request:
         with pytest.raises(RuntimeError, match="[Dd]eadline"):
-            module["_fetch_with_retry"]("https://example.com/data.csv", {}, retries=3)
+            fetch("https://example.com/data.csv", {}, retries=3)
+
+    sleep.assert_called_once_with(1.0)
+    request.assert_called_once()
 
 
 def test_generated_script_is_standalone(tmp_path: Path):
