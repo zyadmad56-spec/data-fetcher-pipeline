@@ -29,6 +29,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 BUDGET = 1.5
+PREFIX_BUDGET = 5.0
 
 
 def _running(pid):
@@ -109,12 +110,12 @@ def local_http():
                     self._headers(1024 * 1024)
                     self.wfile.write(b"id,value\n" + b"1,2\n" * 4096)
                     self.wfile.flush()
-                    fixture.stop.wait(4.0)
+                    fixture.stop.wait()
                 elif self.path == "/prefix-stalled-tail":
                     self._headers(1024 * 1024)
                     self.wfile.write(b"p" * 128)
                     self.wfile.flush()
-                    fixture.stop.wait(4.0)
+                    fixture.stop.wait()
                 elif self.path == "/latin1-gzip":
                     body = gzip.compress(b"name\ncaf\xe9\n")
                     self.send_response(200)
@@ -369,9 +370,12 @@ def test_payload_download_bounds_blocking_stream_and_cleans_partial_file(tmp_pat
 
 @pytest.mark.parametrize("operation", ["request-prefix", "preview"])
 def test_preview_prefix_returns_before_large_body_without_full_size_rejection(tmp_path, local_http, operation):
-    result = _probe(tmp_path, operation, local_http.url + "/prefix", base_url=local_http.url)
+    # Allow for a cold worker on slow runners. The server holds the tail
+    # until teardown, so success still proves the request did not wait for it.
+    result = _probe(tmp_path, operation, local_http.url + "/prefix",
+                    base_url=local_http.url, budget=PREFIX_BUDGET)
     assert result["status"] == "ok", result
-    assert result["elapsed"] < BUDGET + 1.0, result
+    assert result["elapsed"] < PREFIX_BUDGET + 1.0, result
     if operation == "request-prefix":
         assert result["body"].encode("ascii") == (b"id,value\n" + b"1,2\n" * 4096)[:128]
         assert result["body_complete"] is False, result
@@ -456,10 +460,11 @@ def test_transient_connection_drop_retries_at_real_http_boundary(tmp_path, local
 
 
 def test_prefix_ready_at_cap_returns_without_reading_stalled_tail(tmp_path, local_http):
-    result = _probe(tmp_path, "request-prefix", local_http.url + "/prefix-stalled-tail")
+    result = _probe(tmp_path, "request-prefix", local_http.url + "/prefix-stalled-tail",
+                    budget=PREFIX_BUDGET)
     assert result["status"] == "ok" and result["body"] == "p" * 128, result
     assert result["body_complete"] is False, "The unseen tail must not become a complete dataset"
-    assert result["elapsed"] < BUDGET + 1.0, result
+    assert result["elapsed"] < PREFIX_BUDGET + 1.0, result
     assert local_http.closed()
     assert result["spools"] == [], result
 
