@@ -134,6 +134,7 @@ def test_unsupported_route_leaves_input_and_destination_untouched(tmp_path):
         pytest.param("left\x00right", id="embedded-nul"),
         pytest.param("prefix\x00", id="trailing-nul"),
         pytest.param("\x00\x00", id="only-nuls"),
+        pytest.param("\x01n\x01\x00n", id="literal-escape-and-nul"),
         pytest.param('a,\x00"b\nlast', id="quoted-multiline-nul"),
         pytest.param("\ufefffirst-value", id="leading-bom-is-value"),
         pytest.param("left\rright", id="carriage-return"),
@@ -149,6 +150,12 @@ def test_supported_string_bytes_survive_codec_exactly(text):
     restored = decode_frame(*encode_frame(original))
 
     pd.testing.assert_frame_equal(restored, original, check_exact=True)
+
+
+def test_legacy_payload_with_literal_nul_remains_readable():
+    _, sidecar = encode_frame(pd.DataFrame({"text": pd.Series(["placeholder"], dtype=object)}))
+    restored = decode_frame(b"left\x00right\x01n\n", sidecar)
+    assert restored.iloc[0, 0] == "left\x00right\x01n"
 
 
 def test_seeded_unicode_and_delimiter_corpus_survives_without_normalization():
