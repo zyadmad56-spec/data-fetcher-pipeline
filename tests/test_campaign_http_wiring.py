@@ -493,7 +493,10 @@ def test_production_entry_reaps_blocked_or_cancelled_fixed_worker(tmp_path, oper
     worker = tmp_path / "owned_blocking_worker.py"
     worker.write_text(
         "import os, socket, time\nfrom pathlib import Path\n"
-        f"Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+        f"pid_file = Path({str(pid_file)!r})\n"
+        "pending = pid_file.with_suffix('.tmp')\n"
+        "pending.write_text(str(os.getpid()), encoding='ascii')\n"
+        "pending.replace(pid_file)\n"
         + ("socket.getaddrinfo = lambda *a, **k: time.sleep(30)\n"
            "socket.getaddrinfo('owned.invalid', 443)\n" if operation == "dns" else "time.sleep(30)\n"),
         encoding="utf-8",
