@@ -136,8 +136,9 @@ network traffic.
 
 For a built-in preview the human approved, `--resume-preview ID --outdir DIR
 --yes --non-interactive --json-output` continues from the persistent cache
-(`<outdir>/.previews`) with **no second transfer** of the complete payload;
-the record is claimed once and rejects identity drift. If the human declines,
+(`<outdir>/.previews`). A complete cache avoids a second transfer. A cache
+that holds only a sample requires the full request after approval. The record
+is claimed once and rejects identity drift. If the human declines,
 `--discard-preview ID --outdir DIR --json-output` removes exactly that cached
 record — no network, no source/query, idempotent.
 

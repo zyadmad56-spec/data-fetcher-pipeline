@@ -10,9 +10,9 @@ Fetch datasets, review a sample, and save them with a Markdown profile and a rec
 
 ### Project video
 
-https://github.com/user-attachments/assets/853d3944-53ee-4cea-8d19-a223a5a990fb
+The [updated Full HD demo](media/data_fetcher_promo_en.mp4) shows the source catalog, the sample table in chat, and the decision to save or discard a preview. It also walks through the available conversion formats.
 
-The guide below describes the current features and limits. [Download the Full HD video](media/data_fetcher_promo_en.mp4).
+[Watch the earlier demo](https://github.com/user-attachments/assets/853d3944-53ee-4cea-8d19-a223a5a990fb).
 
 ## 1. High-Level Architecture & Value Proposition
 
@@ -59,17 +59,29 @@ registration removes its temporary script and preserves the dataset.
 
 For chat agents, follow [the conversation workflow](references/conversation-workflow.md).
 Use `--preview-only --yes --non-interactive --json-output` before asking for final
-approval. The preview JSON envelope carries no sample cell values and no column
-names: the sample lives in the private inert Markdown artifact (`_human_preview.md`)
-written beside the fetch, the chat host renders that bounded escaped table
-natively in the conversation, and agents must not read the dataset
-artifacts. Pass a bespoke extractor with `--extractor-script PATH`
+approval. The JSON response includes the preview ID and file path, along with
+counts and transfer details. Sample values and column names stay in the preview
+file. The chat workflow uses only the escaped sample table
+in `_human_preview.md`. The table shows up to five rows and 30 columns. Keep the
+saved dataset and its profile out of agent context. Pass a bespoke extractor with `--extractor-script PATH`
 (bounded preview first) and the approved full fetch presents
 `--approve-preview PREVIEW_ID`, which runs the exact staged bytes. Code execution
 happens only behind that receipt gate, and the pipeline never loads instructions
 or configuration from the network. CSV/TSV prefixes are bounded to 256 KB;
 SDK/compressed previews can need full transfer; custom previews run a bounded
 5-row sample. Separate preview/fetch commands may transfer twice.
+
+For a built-in source, use the returned preview ID after the user decides. Keep
+the same output directory you used for the preview.
+
+```bash
+data-fetcher --resume-preview PREVIEW_ID --outdir data_raw --yes --non-interactive --json-output
+data-fetcher --discard-preview PREVIEW_ID --outdir data_raw --json-output
+```
+
+Resume reuses the cached payload when the preview has the complete data. When
+the cache has only a sample, resume makes the full request after approval.
+Discard removes the pending preview without contacting the source.
 
 `--source custom --query URL` now fetches supported public files/simple HTML tables
 through the normal CSV/profile/manifest pipeline. `--analyze-only` requests only
@@ -177,6 +189,21 @@ docker run \
 | **Yahoo Finance** | `yfinance` / `yahoo` | Historical daily open, high, low, close, and volume data. Does not fetch fundamentals. | Quantitative traders building algorithmic trading strategies. |
 | **CoinGecko** | `coingecko` | Cryptocurrency price, market cap, and volume history , no API key required. | Crypto analysts tracking digital-asset market history. |
 
+Run `data-fetcher --list-sources` to see the 12 built-in platforms, the Yahoo
+Finance aliases, and any custom platforms you have saved.
+
+#### Inside Airbnb
+
+Use a city in the verified listings registry, or open [Get the Data](https://insideairbnb.com/get-the-data/)
+and copy the direct link for the listings CSV you want. The source uses that
+published export. For example, preview the Amsterdam registry entry with:
+
+```bash
+data-fetcher --source airbnb --query amsterdam --preview-only --yes --non-interactive --json-output
+```
+
+Review the transfer scope and the source link before approving the save.
+
 **Pacing & Rate Limits:** the internal HTTP client applies per-host pacing (for example, CoinGecko ≥ 6s within one process) and handles `Retry-After` up to 60s. SDK clients have their own request behavior. JSON network metrics count only calls through the internal client; Yahoo/yfinance, OpenML, Kaggle, and generated custom extractors report `null` for those metrics with a `metrics_scope` explanation.
 
 **Performance Characteristics:** supported direct downloads stream to disk with a 500 MB cap; parsing and SDK extraction can still use substantial memory. Excel export uses openpyxl write-only streaming with a 16,384-column guard. Normalized CSV saves use atomic replacement.
@@ -260,6 +287,9 @@ Rdatasets uses a public catalog and needs no API key, R installation, or extra P
 
 ## 4. Recent Updates
 
+- **Inside Airbnb:** The source catalog links to the official export page. Select a verified city or pass a direct listings CSV or CSV.GZ link.
+- **Chat previews:** Review the sample before saving. Use the preview ID to resume or discard a built-in preview. The preview can show the full source link when it matches a reviewed public export.
+- **Conversion checks:** The live smoke test used a downloaded CSV to check Excel, SQLite, and Parquet round trips. The resulting CSVs matched the original column names and values.
 - **Rdatasets:** Fetch public datasets from R packages without an API key. Choose a package/dataset, review a sample, then save the data with its profile and source record.
 - **Clean Architecture:** Core models and rules have no file or network effects. Application code owns the fetch lifecycle; adapters handle prompts, HTTP, storage, and conversion. Existing provider entry points remain available.
 - **Guided fetching:** Choose built-in or saved sources, or enter an external URL. Review actual sample rows before approving a full fetch.
@@ -346,4 +376,7 @@ python -m pip install ".[dev,parquet]"
 python -m pytest -q
 ```
 
-Tests use fixtures and mocked providers. They do not establish that every external platform is currently available. The workflow checks pushes and pull requests; it does not deploy the project.
+GitHub Actions runs the regression suite on Ubuntu, Windows, and macOS with
+Python 3.10 and 3.12. The workflow checks pushes and pull requests. Its fixtures
+and mocked providers cover the pipeline's behavior independently of live site
+availability.
