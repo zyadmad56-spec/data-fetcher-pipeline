@@ -38,6 +38,7 @@ from scripts.base import BaseFetcher
 from scripts.errors import DataFetchError
 from scripts.adapters.extractor_protocol import PreviewReceipt, WorkerRequest, sha256_bytes
 from scripts.adapters.script_runner import ExtractorRejectedError, SubprocessExtractorRunner, inspect_extractor_ast
+from scripts.adapters.sanitization import trusted_failure_code, trusted_failure_message
 from scripts.source_registry import (
     load_preview_receipt, save_preview_receipt, validate_registered_origin,
     verified_script_bytes,
@@ -134,9 +135,11 @@ class CustomFetcher(BaseFetcher):
                                 allowed_origin=self._allowed_origin())
         result, frame = runner.extract(self.script_bytes, request)
         if result.error_code is not None:
-            code = _ERROR_CODE_MAP.get(result.error_code, result.error_code)
-            raise DataFetchError(result.error_summary or f'Extractor failed ({result.error_code}).',
-                                 code=code)
+            # The worker runs reviewed-but-untrusted extractor code, so its
+            # code is translated and allowlisted; its summary is never quoted.
+            code = trusted_failure_code(_ERROR_CODE_MAP.get(result.error_code,
+                                                            result.error_code))
+            raise DataFetchError(trusted_failure_message(code), code=code)
         return frame
 
     def _bounded_sample_frame(self, limit: int):

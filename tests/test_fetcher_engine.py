@@ -669,16 +669,35 @@ def test_ssrf_url_validation() -> None:
 
 def test_redirect_to_private_ip_blocked(tmp_path: Path) -> None:
     """A redirect hop into private IP space must be rejected before the request is made."""
+    from scripts.net_guard import validate_public_url
     analyzer = WebAnalyzer("https://public.example.com/file", str(tmp_path))
-    redirect_resp = MagicMock()
+    redirect_resp = requests_lib.Response()
     redirect_resp.status_code = 302
     redirect_resp.headers = {"Location": "http://192.168.0.1/steal"}
+    redirect_resp._content = b''
+    redirect_resp._content_consumed = True
+    fetched = []
+
+    class FixtureHTTPTransport:
+        def fetch(self, request):
+            assert request.public_only is True
+            validate_public_url(request.url)
+            fetched.append(request.url)
+            if request.url.endswith('/robots.txt'):
+                response = requests_lib.Response()
+                response.status_code = 404
+                response._content = b''
+                response._content_consumed = True
+                return response
+            return redirect_resp
+
     with patch("scripts.web_analyzer.socket.getaddrinfo",
                return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
-        with patch.object(analyzer, "_check_robots_txt", return_value=True):
-            with patch("scripts.web_analyzer.request_with_retry", return_value=redirect_resp):
-                with pytest.raises(ValueError):
-                    analyzer.analyze()
+        with patch('scripts.adapters.http_transport.SupervisedHTTPTransport', FixtureHTTPTransport):
+            report = analyzer.analyze()
+    assert report.difficulty == 'blocked' and report.robots_allowed is False
+    assert fetched == ['https://public.example.com/robots.txt',
+                       'https://public.example.com/file']
 
 def test_generated_script_url_safely_escaped(tmp_path: Path) -> None:
     """URLs containing quotes/backslashes embed as serialized data and yield valid Python."""
@@ -710,12 +729,17 @@ def test_config_wizard_masks_secrets_and_restricts_permissions(tmp_path: Path) -
 def test_interactive_flow_rejects_empty_topic() -> None:
     """Empty topics are re-prompted, never silently defaulted to 'finance'."""
     from scripts.cli import interactive_flow
-    with patch("builtins.input", side_effect=["1", "kaggle", "", "", "covid", "owner/covid", "", "", ""]) as mock_in:
+    with patch("builtins.input", side_effect=[
+            "1", "kaggle", "", "", "covid", "owner/covid",
+            "other", "all", "", "all", "csv"]) as mock_in:
         request = interactive_flow()
     assert request.goal == "covid"
     assert request.source == "kaggle"
     assert request.query == "owner/covid"
-    assert mock_in.call_count == 9
+    assert request.context.purpose == "other" and request.context.row_limit == 0
+    topic_prompts = [call.args[0] for call in mock_in.call_args_list
+                     if "what data" in call.args[0].lower()]
+    assert len(topic_prompts) == 3  # Two blank goals must still be re-prompted.
 
 def test_multi_hop_conversion_cleans_temp_on_failure(tmp_path: Path) -> None:
     """Temp intermediates are removed even when a multi-hop conversion fails mid-way."""

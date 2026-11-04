@@ -31,3 +31,6 @@ data-fetcher = "scripts.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["scripts*"]
+
+[tool.setuptools.package-data]
+scripts = ["resources/*.json"]

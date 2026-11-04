@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 from bs4 import BeautifulSoup
 from scripts.errors import DataFetchError
 from scripts.http_utils import request_with_retry
-from scripts.net_guard import read_bounded_body, validate_public_url
+from scripts.net_guard import read_bounded_body, reject_url_fragments, validate_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,12 @@ class WebAnalyzer:
         """
         parsed = urlparse(self.url)
         robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        validate_public_url(robots_url)
+        if deadline is None:
+            validate_public_url(robots_url)
+        else:
+            # Budgeted path: the supervised child enforces the full public
+            # policy inside the budget; only DNS-free checks run here.
+            reject_url_fragments(robots_url)
         rp = urllib.robotparser.RobotFileParser()
         try:
             response = request_with_retry(
@@ -65,6 +70,7 @@ class WebAnalyzer:
                 stream=True,
                 public_only=True,
                 deadline_sec=max(0.5, deadline - time.monotonic()) if deadline else None,
+                prefix_bytes=ROBOTS_MAX_BYTES,
             )
             if response.status_code == 404:
                 response.close()
@@ -88,8 +94,13 @@ class WebAnalyzer:
         def budget() -> Optional[float]:
             return max(0.5, deadline - time.monotonic())
 
-        # SSRF guard: reject unsafe schemes and non-public targets
-        validate_public_url(self.url)
+        # SSRF guard: reject unsafe schemes and non-public targets. Budgeted
+        # runs delegate address validation to the supervised child; legacy
+        # deadline-free calls keep the in-process check.
+        if deadline is None:
+            validate_public_url(self.url)
+        else:
+            reject_url_fragments(self.url)
 
         # robots.txt is a compliance hard stop: a denied URL is never fetched
         report.robots_allowed = self._check_robots_txt(deadline=deadline)
@@ -114,7 +125,7 @@ class WebAnalyzer:
                     return report
                 response = request_with_retry(
                     url, headers=headers, allow_redirects=False, stream=True,
-                    public_only=True, deadline_sec=budget(),
+                    public_only=True, deadline_sec=budget(), prefix_bytes=1048576,
                 )
                 if response.status_code in (301, 302, 303, 307, 308):
                     location = response.headers.get("Location", "")
@@ -122,8 +133,9 @@ class WebAnalyzer:
                         break
                     response.close()
                     url = urljoin(url, location)
-                    validate_public_url(url)
-                    report.warnings.append(f"Redirected to {url}")
+                    reject_url_fragments(url)
+                    from scripts.adapters.sanitization import _origin_only_url
+                    report.warnings.append(f"Redirected to {_origin_only_url(url)}.")
                     redirected = WebAnalyzer(url, self.output_dir)
                     if not redirected._check_robots_txt(deadline=deadline):
                         report.robots_allowed = False
@@ -141,11 +153,17 @@ class WebAnalyzer:
             # report it as a blocked target instead of crashing the analysis
             report.difficulty = "blocked"
             report.status_code = 0
-            report.warnings.append(f"Connection failed: {exc}")
+            report.warnings.append(
+                f"Connection failed ({getattr(exc, 'code', 'NETWORK') or 'NETWORK'}).")
             return report
 
         report.status_code = response.status_code
-        report.content_type = response.headers.get("Content-Type", "").lower()
+        raw_content_type = next((str(v) for k, v in response.headers.items()
+                                  if str(k).lower() == 'content-type'), '')
+        media_type = raw_content_type.split(';')[0].strip().lower()
+        if not re.fullmatch(r'[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*', media_type):
+            media_type = ''
+        report.content_type = media_type
         if response.status_code >= 400:
             report.difficulty = 'blocked'
             report.warnings.append(f'Provider refused access (HTTP {response.status_code}).')
@@ -164,38 +182,41 @@ class WebAnalyzer:
             report.warnings.append("Cloudflare protection mechanism detected.")
 
         # Check Rate Limit Headers
-        for key, value in response.headers.items():
-            key_lower = key.lower()
-            if "ratelimit" in key_lower or "retry-after" in key_lower:
-                report.rate_limit_headers[key] = value
+        limit_header_count = sum(
+            1 for key in response.headers
+            if "ratelimit" in str(key).lower() or "retry-after" in str(key).lower())
+        # Server-authored header names and values stay server-side: only the
+        # controlled observation and its count enter the report.
+        if limit_header_count:
+            report.warnings.append(
+                f"Rate limiting headers detected ({limit_header_count} header(s)).")
 
-        if report.rate_limit_headers:
-            report.warnings.append(f"Rate limiting headers detected: {list(report.rate_limit_headers.keys())}")
-
-        # If direct file, it's EASY
+        # Content evidence decides, not the filename suffix: a '.csv' URL that
+        # actually serves an HTML login/challenge page must never be classified
+        # easy on its extension alone (TEST_SPEC 'source assessment').
+        html_declared = "text/html" in report.content_type
         is_direct_file = False
         for ext in [".csv", ".xlsx", ".json", ".parquet", ".tsv"]:
             if self.url.lower().split("?")[0].endswith(ext):
                 is_direct_file = True
                 break
 
-        if "text/csv" in report.content_type or "application/json" in report.content_type or is_direct_file:
+        if not html_declared and ("text/csv" in report.content_type
+                                  or "application/json" in report.content_type
+                                  or is_direct_file):
             report.difficulty = "easy"
             response.close()
             return report
 
         # HTML parsing
         if "text/html" in report.content_type:
-            preview = bytearray()
             try:
-                for chunk in response.iter_content(chunk_size=65536):
-                    preview.extend(chunk[:max(0, 1048576 - len(preview))])
-                    if len(preview) >= 1048576:
-                        report.warnings.append("HTML analysis limited to the first 1 MB.")
-                        break
-                    if time.monotonic() >= deadline:
-                        report.warnings.append("HTML analysis stopped at the analysis deadline.")
-                        break
+                # Prefix intent: the supervised child spools at most 1 MB and
+                # closes the upstream; assessment never downloads a whole
+                # dataset merely to classify it.
+                preview = bytearray(response.content or b'')[:1048576]
+                if len(preview) >= 1048576:
+                    report.warnings.append("HTML analysis limited to the first 1 MB.")
             finally:
                 response.close()
             html_text = preview.decode(response.encoding or "utf-8", errors="replace")

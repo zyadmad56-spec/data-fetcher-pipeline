@@ -18,6 +18,7 @@ from scripts.adapters.payload import PayloadReader
 from scripts.config import _write_config
 from scripts.core.models import FetchState, PayloadSpec
 from scripts.factory import get_fetcher, list_sources
+from scripts.errors import DataFetchError
 from scripts.fetchers.airbnb import AirbnbFetcher
 from scripts.fetchers.datagov import DataGovFetcher
 from scripts.fetchers.fred import FREDFetcher
@@ -57,25 +58,13 @@ def test_config_write_failure_keeps_previous_config_and_cleans_temp(tmp_path):
 # airbnb — https index, host allowlist, public-URL validation
 # ---------------------------------------------------------------------------
 
-def test_airbnb_scout_uses_https_index_and_allows_only_insideairbnb(tmp_path):
-    fetcher = AirbnbFetcher("lisbon", str(tmp_path), {})
-    html = (
-        '<a href="https://evil.example.com/lisbon/listings.csv.gz">offsite</a>'
-        '<a href="http://insideairbnb.com/lisbon/listings.csv.gz">plaintext</a>'
-        '<a href="lisbon/listings.csv.gz">relative</a>'
-    )
-    response = MagicMock(status_code=200, text=html)
-    with patch("scripts.fetchers.airbnb.request_with_retry", return_value=response) as request:
-        with patch("scripts.fetchers.airbnb.validate_public_url") as validate:
-            fetcher.scout()
-
-    assert request.call_args.args[0] == "https://insideairbnb.com/get-the-data/"
-    # The relative href resolves onto the https index host and is accepted.
-    assert fetcher.download_url == "https://insideairbnb.com/get-the-data/lisbon/listings.csv.gz"
-    validate.assert_called_once_with("https://insideairbnb.com/get-the-data/lisbon/listings.csv.gz")
-    joined = " ".join(fetcher.completeness_warnings)
-    assert "https://evil.example.com/lisbon/listings.csv.gz" in joined  # offsite host
-    assert "http://insideairbnb.com/lisbon/listings.csv.gz" in joined   # plaintext scheme
+def test_airbnb_verified_city_resolves_without_scraping_index(tmp_path):
+    fetcher = AirbnbFetcher("amsterdam", str(tmp_path), {})
+    with patch("requests.sessions.Session.request", side_effect=AssertionError("Selection must be offline")):
+        fetcher.scout()
+    assert fetcher.download_url == (
+        "https://data.insideairbnb.com/the-netherlands/north-holland/"
+        "amsterdam/2026-09-16/data/listings.csv.gz")
     assert metadata_ok(fetcher)
 
 
@@ -83,12 +72,25 @@ def metadata_ok(fetcher):
     return isinstance(fetcher, AirbnbFetcher) and fetcher.download_url.startswith("https://")
 
 
-def test_airbnb_scout_fails_closed_without_an_allowlisted_link(tmp_path):
+def test_airbnb_unknown_city_requires_selection_without_network(tmp_path):
     fetcher = AirbnbFetcher("lisbon", str(tmp_path), {})
-    response = MagicMock(status_code=200,
-                         text='<a href="https://mirror.example.net/lisbon/listings.csv.gz">mirror</a>')
-    with patch("scripts.fetchers.airbnb.request_with_retry", return_value=response):
-        with pytest.raises(ValueError, match="safe insideairbnb.com"):
+    with patch("requests.sessions.Session.request", side_effect=AssertionError("Unknown city must not scrape")):
+        with pytest.raises(DataFetchError) as caught:
+            fetcher.scout()
+    assert caught.value.code == "SOURCE_SELECTION_REQUIRED"
+    assert fetcher.download_url == ""
+
+
+@pytest.mark.parametrize("url", [
+    "http://data.insideairbnb.com/city/listings.csv",
+    "https://data.insideairbnb.com.evil.example/city/listings.csv",
+    "https://data.insideairbnb.com@evil.example/city/listings.csv",
+    "https://evil.example/city/listings.csv",
+])
+def test_airbnb_official_export_lookalikes_are_refused_before_network(tmp_path, url):
+    fetcher = AirbnbFetcher(url, str(tmp_path), {})
+    with patch("requests.sessions.Session.request", side_effect=AssertionError("Unsafe URL must not be fetched")):
+        with pytest.raises((DataFetchError, ValueError)):
             fetcher.scout()
     assert fetcher.download_url == ""
 

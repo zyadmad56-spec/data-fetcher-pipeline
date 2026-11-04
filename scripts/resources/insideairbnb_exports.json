@@ -1,0 +1,45 @@
+{
+  "schema_version": "insideairbnb-registry.v1",
+  "verified_at": "2026-11-02",
+  "source_page": "https://insideairbnb.com/get-the-data/",
+  "policy_page": "https://insideairbnb.com/data-policies/",
+  "notes": [
+    "Metadata only: no dataset content is stored here.",
+    "Entries are added only after a human verifies the official publication page, never by automated index crawling.",
+    "observed facts record what a specific unauthenticated probe actually saw on its date; they are not guarantees."
+  ],
+  "resources": [
+    {
+      "region_id": "amsterdam",
+      "label": "Amsterdam, North Holland, Netherlands",
+      "aliases": ["amsterdam"],
+      "snapshot": "2026-09-16",
+      "resource_type": "detailed_listings",
+      "url": "https://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/2026-09-16/data/listings.csv.gz"
+    },
+    {
+      "region_id": "amsterdam",
+      "label": "Amsterdam, North Holland, Netherlands (summary)",
+      "aliases": ["amsterdam"],
+      "snapshot": "2026-09-16",
+      "resource_type": "summary_listings",
+      "url": "https://data.insideairbnb.com/the-netherlands/north-holland/amsterdam/2026-09-16/visualisations/listings.csv"
+    },
+    {
+      "region_id": "albany",
+      "label": "Albany, New York, United States (summary)",
+      "aliases": ["albany"],
+      "snapshot": "2026-09-14",
+      "resource_type": "summary_listings",
+      "url": "https://data.insideairbnb.com/united-states/ny/albany/2026-09-14/visualisations/listings.csv",
+      "observed": {
+        "observed_at": "2026-11-02",
+        "method": "unauthenticated header-only probe",
+        "status": 200,
+        "content_type": "application/csv",
+        "bytes": 90405,
+        "etag": "3d1414edea291042f0efe1ed694d801a"
+      }
+    }
+  ]
+}

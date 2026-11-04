@@ -36,16 +36,18 @@ pandas nullable dtypes (``Int64``, ``Float64``, ``boolean``, ``string``).
 Values are written to a headerless CSV (headers travel in the sidecar, so
 duplicate names survive verbatim) with every missing value replaced by a
 per-encode sentinel that is verified not to collide with any string cell; the
-decoder reads raw text (``na_filter=False``) and rebuilds exact dtypes from the
-sidecar. Data frames always decode with a fresh positional ``RangeIndex`` —
-the payload carries values and schema, never a custom index; this is a
-documented property of the transport, not silent degradation.
+decoder reads every field as exact text with the stdlib CSV reader and rebuilds
+exact dtypes from the sidecar. Data frames always decode with a fresh
+positional ``RangeIndex`` — the payload carries values and schema, never a
+custom index; this is a documented property of the transport, not silent
+degradation.
 
 Honest scope: this module is data plumbing. It does not sandbox the worker and
 does not defend against same-user tampering with local files.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -613,6 +615,38 @@ def _convert_column(series: pd.Series, entry: dict, sentinel: str) -> pd.Series:
     return converted
 
 
+def _read_payload_rows(csv_bytes: bytes, column_count: int) -> list[list[str]]:
+    """Parse the headerless payload into one exact string list per row.
+
+    The stdlib reader is used instead of pandas because the C parser silently
+    truncates a field at an embedded NUL and strips a leading U+FEFF, while
+    the Python engine drops empty records; either would corrupt supported
+    string values. ``strict=True`` keeps malformed quoting a hard failure
+    rather than a silently repaired value.
+    """
+    try:
+        text = csv_bytes.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise _reject('payload is not valid UTF-8 text.',
+                      code=IPC_PAYLOAD_CORRUPT) from exc
+    # The stdlib reader refuses fields beyond 128K characters by default;
+    # payload cells are bounded by the transfer cap, not by that default.
+    previous_field_limit = csv.field_size_limit()
+    csv.field_size_limit(max(previous_field_limit, len(text)))
+    try:
+        rows = list(csv.reader(io.StringIO(text), strict=True))
+    except csv.Error as exc:
+        raise _reject(f'payload is not parseable CSV: {exc}',
+                      code=IPC_PAYLOAD_CORRUPT) from exc
+    finally:
+        csv.field_size_limit(previous_field_limit)
+    for row in rows:
+        if len(row) != column_count:
+            raise _reject('payload: column count mismatch with sidecar.',
+                          code=IPC_PAYLOAD_CORRUPT)
+    return rows
+
+
 def decode_frame(csv_bytes: bytes, sidecar_bytes: bytes) -> pd.DataFrame:
     """Decode ``(csv_bytes, sidecar_bytes)`` produced by :func:`encode_frame`.
 
@@ -634,17 +668,16 @@ def decode_frame(csv_bytes: bytes, sidecar_bytes: bytes) -> pd.DataFrame:
         frame.columns = [entry['name'] for entry in columns]
         frame.index = pd.RangeIndex(0)
         return frame
-    try:
-        raw = pd.read_csv(io.BytesIO(csv_bytes), header=None,
-                          names=[f'c{position}' for position in range(len(columns))],
-                          dtype=str, na_filter=False, keep_default_na=False, engine='c')
-    except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as exc:
-        raise _reject(f'payload is not parseable CSV: {exc}', code=IPC_PAYLOAD_CORRUPT) from exc
-    if len(raw) != sidecar['rows']:
+    rows = _read_payload_rows(csv_bytes, len(columns))
+    if len(rows) != sidecar['rows']:
         raise _reject(f"payload: sidecar declares {sidecar['rows']} rows but payload has "
-                      f'{len(raw)}.', code=IPC_PAYLOAD_CORRUPT)
-    if len(raw.columns) != len(columns):
-        raise _reject('payload: column count mismatch with sidecar.', code=IPC_PAYLOAD_CORRUPT)
+                      f'{len(rows)}.', code=IPC_PAYLOAD_CORRUPT)
+    if not columns:
+        # A payload with records but no columns carries nothing decodable.
+        raise _reject('payload: expected at least one column for a non-empty frame.',
+                      code=IPC_PAYLOAD_CORRUPT)
+    raw = pd.DataFrame(rows, dtype=object,
+                       columns=[f'c{position}' for position in range(len(columns))])
     parts = [_convert_column(raw.iloc[:, position], entry, sentinel)
              for position, entry in enumerate(columns)]
     frame = pd.concat(parts, axis=1)

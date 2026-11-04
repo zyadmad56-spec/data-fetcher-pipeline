@@ -4,15 +4,23 @@ Hostile headers, cells, links, URLs, control characters and error prose must
 render inert on every automatic agent channel (stdout/stderr), while clean
 display text stays byte-for-byte intact for the interactive human.
 """
+import contextlib
+import io
+import json
 import os
 import re
 import stat
+import subprocess
+import sys
+from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
+from scripts import cli
 from scripts.adapters.sanitization import (
     MAX_SCRUBBED_CHARS,
     PREVIEW_FILENAME,
@@ -24,7 +32,9 @@ from scripts.adapters.sanitization import (
 )
 from scripts.adapters.terminal import NonInteractiveInteraction, TerminalInteraction
 from scripts.base import BaseFetcher
+from scripts.cli import main
 from scripts.core.errors import DataFetchError
+from scripts.web_analyzer import AnalysisReport, WebAnalyzer
 
 
 # --- sanitize_display_text ----------------------------------------------------
@@ -179,20 +189,21 @@ def _hostile_frame() -> pd.DataFrame:
 
 def test_human_preview_writes_escaped_artifact_without_channel_leaks(tmp_path, capsys):
     path = write_human_preview(
-        _hostile_frame(), 'https://example.com/data.csv?token=SECRET',
+        _hostile_frame(), 'https://example.com/PRIVATE_PATH.csv?token=SECRET_QUERY',
         'Preview <of> evil', tmp_path,
         'full transfer/extraction needed for preview', ['warn | pipe'])
     captured = capsys.readouterr()
     assert captured.out == '' and captured.err == ''
     assert path == tmp_path / PREVIEW_FILENAME and path.is_file()
     content = path.read_text(encoding='utf-8')
-    # Source URL is an inert code span, never an autolink.
-    assert '`https://example.com/data.csv?token=SECRET`' in content
+    # Only the source origin appears, as an inert code span.
+    assert '`https://example.com`' in content
     assert '<https://example.com' not in content
+    assert 'PRIVATE_PATH' not in content and 'SECRET_QUERY' not in content
     # Cells, headers, links and control chars are inert.
     assert 'A\\|B' in content
-    assert '\\<script\\>' in content
-    assert '\\[click\\](https://evil.example)' in content
+    assert '`<script>x`' in content
+    assert '`[click](https://evil.example)`' in content
     assert '\x1b' not in content and '\u202e' not in content
     assert 'l1\\x0al2' in content
     # All column names are listed (the OSC-padded one is stripped to 'name').
@@ -307,3 +318,141 @@ def test_skill_md_flags_exist_in_cli_parser():
         implemented.update(action.option_strings)
     missing = sorted(documented - implemented)
     assert not missing, f'Flags documented in SKILL.md but missing from the CLI: {missing}'
+
+
+class RecordsFetcher(BaseFetcher):
+    def scout(self):
+        return {'url': 'https://example.com/records.csv'}
+
+    def extract(self):
+        return pd.DataFrame({'value': [1, 2, 3]})
+
+
+def invoke_cli(fetcher, tmp_path):
+    stdout, stderr = io.StringIO(), io.StringIO()
+    arguments = ['data-fetcher', '--source', 'worldbank', '--query', 'records',
+                 '--outdir', str(tmp_path), '--yes', '--json-output']
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
+            patch.object(sys, 'argv', arguments), \
+            patch.object(cli, 'setup_wizard', return_value={}), \
+            patch.object(cli, 'get_fetcher', return_value=fetcher):
+        expected_stdout = sys.stdout
+        try:
+            cli.main()
+            exit_code = 0
+        except SystemExit as exc:
+            exit_code = exc.code
+        finally:
+            restored = sys.stdout is expected_stdout
+            sys.stdout = expected_stdout
+    assert restored, 'CLI must restore stdout even when cleanup fails'
+    return json.loads(stdout.getvalue()), exit_code
+
+
+@pytest.mark.parametrize('extraction_fails', [False, True])
+def test_cleanup_failure_is_visible_without_masking_extraction(tmp_path, extraction_fails):
+    fetcher = RecordsFetcher('records', str(tmp_path), {})
+    fetcher.cleanup = MagicMock(side_effect=PermissionError('temporary extractor is locked'))
+    if extraction_fails:
+        fetcher.extract = MagicMock(side_effect=DataFetchError('dataset absent', code='NOT_FOUND'))
+    envelope, exit_code = invoke_cli(fetcher, tmp_path)
+    fetcher.cleanup.assert_called_once()
+    # Cleanup failure remains visible without forwarding exception-controlled prose.
+    assert any('cleanup failed' in warning.lower() for warning in envelope['warnings'])
+    assert 'temporary extractor is locked' not in json.dumps(envelope)
+    if extraction_fails:
+        assert exit_code == 1 and envelope['code'] == 'NOT_FOUND'
+    else:
+        assert exit_code == 0 and envelope['status'] == 'success'
+        assert envelope['complete'] is True
+        assert pd.read_csv(envelope['output_path']).value.tolist() == [1, 2, 3]
+
+
+@pytest.mark.parametrize('failed_artifacts', [
+    ['description'], ['manifest'], ['description', 'manifest'],
+])
+def test_metadata_write_failure_reports_actual_artifacts(tmp_path, failed_artifacts):
+    fetcher = RecordsFetcher('records', str(tmp_path), {})
+    real_open = open
+
+    def locked_metadata(path, *args, **kwargs):
+        filename = str(path)
+        if ('description' in failed_artifacts and filename.endswith('_description.md.tmp')
+                or 'manifest' in failed_artifacts and filename.endswith('manifest.jsonl.tmp')):
+            raise PermissionError('metadata file locked')
+        return real_open(path, *args, **kwargs)
+
+    with patch('builtins.open', side_effect=locked_metadata):
+        envelope, exit_code = invoke_cli(fetcher, tmp_path)
+    assert exit_code == 0 and envelope['status'] == 'success'
+    assert envelope['complete'] is True  # data completeness is independent of metadata
+    assert pd.read_csv(envelope['output_path']).value.tolist() == [1, 2, 3]
+    assert len(envelope['warnings']) == len(failed_artifacts)
+    for artifact in ('description', 'manifest'):
+        path = envelope[artifact + '_path']
+        assert not path if artifact in failed_artifacts else Path(path).is_file()
+
+
+def test_human_analysis_preserves_report_json_with_warnings(tmp_path, capsys):
+    report = AnalysisReport(url='https://example.com/data.csv', difficulty='easy',
+                            warnings=['Check provider license before using the records.'])
+    arguments = ['data-fetcher', '--source', 'custom', '--query', report.url,
+                 '--outdir', str(tmp_path), '--analyze-only']
+    with patch.object(sys, 'argv', arguments), patch.object(cli, 'setup_wizard', return_value={}), \
+            patch.object(WebAnalyzer, 'analyze', return_value=report):
+        cli.main()
+    assert json.loads(capsys.readouterr().out) == asdict(report)
+
+
+def test_list_sources_v2_shape(tmp_path: Path) -> None:
+    """Verify source catalog CLI discovery schema conforms to v2 machine specifications."""
+    pipeline_root = Path(__file__).resolve().parent.parent
+    cli_entrypoint = pipeline_root / "scripts" / "cli.py"
+
+    process_result = subprocess.run(
+        [sys.executable, str(cli_entrypoint), "--list-sources", "--json-output"],
+        cwd=str(pipeline_root),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    catalog_envelope: Dict[str, Any] = json.loads(process_result.stdout.strip().splitlines()[-1])
+    assert catalog_envelope.get("status") == "success"
+
+    sources_catalog: List[Dict[str, str]] = catalog_envelope.get("sources", [])
+    assert len(sources_catalog) == 13
+    required_attributes = {"key", "platform", "query_format", "example", "auth"}
+    for source_entry in sources_catalog:
+        assert required_attributes.issubset(source_entry.keys())
+
+    coingecko_entry = next(src for src in sources_catalog if src.get("key") == "coingecko")
+    assert "none" in coingecko_entry["auth"].lower()
+
+
+def test_envelope_has_source_query_echo(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Verify CLI success envelope faithfully echoes query and source identity."""
+    mock_fetcher = MagicMock()
+    mock_fetcher.run.return_value = str(tmp_path / "gdp_raw.csv")
+    mock_fetcher.rows_count = 50
+    mock_fetcher.cols_count = 2
+    mock_fetcher.complete = True
+    mock_fetcher.completeness_warnings = []
+    mock_fetcher.truncation = None
+    mock_fetcher.last_sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    mock_fetcher.last_bytes = 1024
+    mock_fetcher.last_description_path = ""
+    mock_fetcher.dataset_url = "https://fred.stlouisfed.org/series/GDP"
+    mock_fetcher.resolved_title = "Gross Domestic Product"
+
+    cli_arguments = [
+        "cli", "--source", "fred", "--query", "GDP",
+        "--outdir", str(tmp_path), "--yes", "--non-interactive", "--json-output",
+    ]
+    with patch("sys.argv", cli_arguments), \
+         patch("scripts.cli.setup_wizard", return_value={}), \
+         patch("scripts.cli.get_fetcher", return_value=mock_fetcher):
+        main()
+
+    response_envelope: Dict[str, Any] = json.loads(capsys.readouterr().out.strip())
+    assert response_envelope["source"] == "fred"
+    assert response_envelope["query"] == "GDP"

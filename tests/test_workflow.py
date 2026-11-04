@@ -36,26 +36,34 @@ class FrameFetcher(BaseFetcher):
         return pd.DataFrame({'value': range(20), 'label': ['real record'] * 20})
 
 
-def test_source_first_number_and_five_data_questions():
+def test_source_first_number_preserves_adaptive_training_requirements():
     number = str(list_sources().index('kaggle') + 1)
-    with patch('builtins.input', side_effect=['1', number, 'aircraft training data', 'owner/aircraft', 'value,label', '100', 'excel']) as ask:
+    answers = ['1', number, 'aircraft training data', 'owner/aircraft',
+               'training', 'all', 'value,label', '100', 'excel', 'label']
+    with patch('builtins.input', side_effect=answers) as ask:
         req = interview('chosen-output')
     assert req.source == 'kaggle' and req.query == 'owner/aircraft'
     assert req.rows == 100 and req.columns == ['value', 'label'] and req.output_format == 'excel'
     assert req.outdir == 'chosen-output'
     assert ask.call_args_list[0].args[0].startswith('1. Ready')
-    assert ask.call_count == 7  # two routing questions plus five request questions
+    assert req.context.purpose == 'training' and req.context.target == 'label'
+    assert req.context.required_fields == ('value', 'label')
+    assert ask.call_count == len(answers)  # Includes the consequential target question.
 
 
 def test_external_platform_name_requires_url():
-    with patch('builtins.input', side_effect=['2', 'Example Portal', 'https://example.com/data.csv', 'aircraft', 'value', '50', 'json']):
+    with patch('builtins.input', side_effect=[
+            '2', 'Example Portal', 'https://example.com/data.csv', 'aircraft',
+            'other', 'all', 'value', '50', 'json']):
         req = interview()
     assert req.source == 'custom' and req.query == 'https://example.com/data.csv'
     assert req.rows == 50 and req.output_format == 'json'
+    assert req.context.source == 'custom'
+    assert req.context.selector == 'https://example.com/data.csv'
 
 
 def test_mismatch_can_switch_source():
-    with patch('builtins.input', side_effect=['1', 'airbnb', 'طيارات', 'switch', 'openml', 'aircraft', '', '', '']):
+    with patch('builtins.input', side_effect=['1', 'airbnb', 'aircraft', 'switch', 'openml', 'aircraft', 'other', 'all', '', 'all', 'csv']):
         req = interview()
     assert req.source == 'openml'
     assert relevance_warning('sec', 'aircraft company revenue') == ''
@@ -437,3 +445,23 @@ def test_redirect_robots_denial_stops_second_target_request(tmp_path):
         report = analyzer.analyze()
     assert report.difficulty == 'blocked' and not report.robots_allowed
     assert request.call_count == 1
+
+
+@pytest.mark.parametrize('difficulty,target,mime,final_url,body', [
+    ('medium', 'https://example.com/data.csv', 'text/csv', None, b'model\nA320\n'),
+    ('easy', 'https://example.com/table', 'text/html', None,
+     b'<table><tr><th>model</th></tr><tr><td>A320</td></tr></table>'),
+    ('medium', 'https://example.com/download', 'application/octet-stream',
+     'https://example.com/data.csv', b'model\nA320\n'),
+    ('medium', 'https://example.com/stale.html', 'text/csv', None, b'model\nA320\n'),
+    ('easy', 'https://example.com/stale.csv', 'application/json', None, b'[{"model":"A320"}]'),
+])
+def test_reused_extractor_uses_current_response_format(tmp_path, difficulty, target, mime, final_url, body):
+    analyzer = WebAnalyzer('https://example.com/original', str(tmp_path))
+    script = analyzer.generate_script(AnalysisReport(url=analyzer.url, difficulty=difficulty))
+    extract = runpy.run_path(script, run_name='regression_extractor')['extract_frame']
+    response = MagicMock(status_code=200, headers={'Content-Type': mime}, url=final_url or target)
+    response.iter_content.return_value = iter([body])
+    extract.__globals__['_fetch_with_retry'] = lambda *args: response
+    assert extract(url=target, columns=['model']).model.tolist() == ['A320']
+    response.close.assert_called_once()

@@ -41,9 +41,12 @@ class FileArtifactStore:
             os.replace(md_tmp, md_filepath)
             self.state.last_description_path = str(md_filepath)
             print(f'[Success] Automated Dataset Markdown Profile generated at {md_filepath}')
-        except OSError as exc:
-            warning = f'Failed to generate markdown profile: {exc}'
-            self.state.artifact_warnings.append(warning)
+        except OSError:
+            # Controlled local text only: OSError strerror can embed task paths
+            # and never belongs in an automatic channel. Details stay on the
+            # terminal-facing report line and in the task's own diagnostics.
+            warning = 'Failed to generate markdown profile (filesystem error).'
+            self.state.degraded_warnings.append(warning)
             print(f'[Warning] {warning}')
 
     @staticmethod
@@ -87,9 +90,10 @@ class FileArtifactStore:
                 os.fsync(f.fileno())
             os.replace(tmp_manifest, manifest)
             self.state.last_manifest_path = str(manifest)
-        except OSError as e:
-            warning = f'Failed to update manifest: {e}'
-            self.state.artifact_warnings.append(warning)
+        except OSError:
+            # Controlled local text only; see the profile-failure note above.
+            warning = 'Failed to update manifest (filesystem error).'
+            self.state.degraded_warnings.append(warning)
             print(f'[Warning] {warning}', file=sys.stderr)
 
     def _reconcile_incomplete_commit(self, filepath: Path, tmp_path: Path, prev_path: Path) -> None:
@@ -171,7 +175,10 @@ class FileArtifactStore:
             'bytes': self.state.last_bytes,
             'sha256': self.state.last_sha256,
             'complete': self.state.complete,
-            'warnings': list(self.state.completeness_warnings),
+            'warnings': list(dict.fromkeys(
+                list(self.state.completeness_warnings)
+                + list(self.state.degraded_warnings)
+                + list(self.state.artifact_warnings))),
             'truncation': self.state.truncation,
             'original_path': self.state.last_original_path or None,
             'original_sha256': self.state.last_original_sha256 or None,

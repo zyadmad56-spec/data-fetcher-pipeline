@@ -89,11 +89,12 @@ def test_json_conversion_preserves_float_precision(tmp_path: Path) -> None:
     csv_path.write_text("identifier,price\n1.2345678901234568e+18,0.12345678901234566\n", encoding="utf-8")
 
     json_path = Path(FormatAlchemyEngine.convert(str(csv_path), "json"))
-    original = pd.read_csv(csv_path)
-    converted = pd.read_json(json_path, convert_dates=False, precise_float=True)
-
-    assert converted["identifier"].iloc[0] == original["identifier"].iloc[0]
-    assert converted["price"].iloc[0] == original["price"].iloc[0]
+    # Schema-less CSV retains source lexemes rather than pandas' lossy float inference.
+    converted = json.loads(json_path.read_text(encoding="utf-8"))
+    assert converted == [{"identifier": "1.2345678901234568e+18",
+                          "price": "0.12345678901234566"}]
+    assert csv_path.read_text(encoding="utf-8") == (
+        "identifier,price\n1.2345678901234568e+18,0.12345678901234566\n")
 
 
 def test_config_permission_failure_is_reported_without_crashing(capsys: pytest.CaptureFixture[str]) -> None:

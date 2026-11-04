@@ -93,6 +93,128 @@ def _parse_retry_after(header_value: str, fallback: float) -> float:
         except (TypeError, ValueError):
             return fallback
 
+def _supervised_request(
+    url: str, *, headers, max_retries, backoff_base, timeout, stream,
+    allow_redirects, public_only, max_body_bytes, deadline_sec, prefix_bytes,
+    transport,
+) -> requests.Response:
+    """Parent loop over the fixed-function supervised child.
+
+    One child per attempt with the REMAINING absolute budget; retries, host
+    pacing and metrics stay in the parent (real clock, no DNS). Metering
+    ownership: this layer counts dispatched attempts and actual upstream
+    response bytes exactly once — callers' local spool reads are not
+    re-counted. Recoverable NETWORK faults participate in the retry policy;
+    policy refusals, invalid inputs and spent timeouts never do.
+    """
+    from scripts.adapters.http_transport import HTTPRequest, SupervisedHTTPTransport
+
+    started = time.monotonic()
+
+    def _spent() -> bool:
+        return deadline_sec - (time.monotonic() - started) <= 0
+
+    def _bounded(seconds: float) -> float:
+        return min(seconds, 60.0, max(0.0, deadline_sec - (time.monotonic() - started)))
+
+    if transport is None:
+        transport = SupervisedHTTPTransport()
+    last_response = None
+    last_error = None
+    attempt = 0
+    while attempt < max_retries:
+        # Host pacing is preserved across disposable workers but can never
+        # outlive the request's own budget: wait at most the remaining time,
+        # then let the deadline check classify the outcome.
+        host = urlparse(url).netloc
+        min_interval = MIN_HOST_INTERVALS.get(host, 0.0)
+        if min_interval > 0:
+            last = _last_request_ts.get(host)
+            if last is not None:
+                wait = min_interval - (time.time() - last)
+                if wait > 0:
+                    time.sleep(_bounded(wait))
+        _last_request_ts[host] = time.time()
+        remaining = deadline_sec - (time.monotonic() - started)
+        if remaining <= 0:
+            break
+        _METRICS["requests"] += 1
+        job = HTTPRequest(
+            url=url, deadline_sec=remaining, public_only=public_only,
+            headers=dict(headers or {}), timeout=timeout, stream=stream,
+            allow_redirects=allow_redirects, max_body_bytes=max_body_bytes,
+            prefix_bytes=prefix_bytes, max_retries=1,
+            backoff_base=backoff_base)
+        try:
+            response = transport.fetch(job)
+        except DataFetchError as exc:
+            if exc.code != 'NETWORK':
+                raise
+            last_error = exc
+            attempt += 1
+            _METRICS["retries"] += 1
+            if attempt >= max_retries:
+                raise
+            time.sleep(_bounded(backoff_base ** attempt))
+            continue
+        last_response = response
+        # Metering counts only what the boundary actually reported: touching
+        # response.content here would mark an unconsumed body as consumed and
+        # stop its close() from releasing the underlying resource.
+        body_bytes = getattr(response, "body_bytes", None)
+        if isinstance(body_bytes, bool) or not isinstance(body_bytes, int) or body_bytes < 0:
+            body_bytes = 0
+        _METRICS["bytes"] += int(body_bytes)
+        if _spent():
+            # A late success is not a success, whatever its status.
+            response.close()
+            raise DataFetchError(
+                f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+                code="TIMEOUT")
+        if response.status_code == 429 and attempt + 1 < max_retries:
+            attempt += 1
+            _METRICS["retries"] += 1
+            retry_after_str = response.headers.get("Retry-After", "")
+            fallback = backoff_base ** attempt
+            wait = _parse_retry_after(retry_after_str, fallback) if retry_after_str else fallback
+            response.close()
+            time.sleep(_bounded(wait))
+            continue
+        if response.status_code >= 500 and attempt + 1 < max_retries:
+            attempt += 1
+            _METRICS["retries"] += 1
+            response.close()
+            time.sleep(_bounded(backoff_base ** attempt))
+            continue
+        if response.status_code == 429 or response.status_code >= 500:
+            # Exhausted failure: never a success; the tail raises the coded
+            # outcome with deadline precedence.
+            break
+        return response
+    if _spent():
+        if last_response is not None:
+            last_response.close()
+        raise DataFetchError(
+            f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+            code="TIMEOUT")
+    if last_response is not None and last_response.status_code == 429:
+        last_response.close()
+        raise DataFetchError(
+            f"Rate limited (429) by {urlparse(url).netloc} after {max_retries} attempts. "
+            "Wait ~60s and re-run.", code="RATE_LIMITED")
+    if last_response is not None and last_response.status_code >= 500:
+        status = last_response.status_code
+        last_response.close()
+        raise DataFetchError(
+            f"All {max_retries} retries exhausted for {_public_error_url(url)} with status {status}.",
+            code="PROVIDER_ERROR")
+    if last_error is not None:
+        raise last_error
+    raise DataFetchError(
+        f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+        code="TIMEOUT")
+
+
 def request_with_retry(
     url: str,
     *,
@@ -105,6 +227,8 @@ def request_with_retry(
     public_only: bool = False,
     max_body_bytes: Optional[int] = None,
     deadline_sec: Optional[float] = None,
+    prefix_bytes: Optional[int] = None,
+    transport=None,
 ) -> requests.Response:
     """HTTP GET with exponential backoff retry for transient failures.
 
@@ -120,11 +244,25 @@ def request_with_retry(
     With max_body_bytes set, non-streamed bodies larger than the cap (or a
     Content-Length larger than the cap) raise a coded SIZE_LIMIT error;
     streamed bodies remain the caller's responsibility to bound while reading.
-    With deadline_sec set, the whole call — retries and backoff sleeps
-    included — must complete within that many seconds (monotonic clock) or a
-    coded TIMEOUT error is raised; sleeps are additionally clamped to the
-    remaining budget.
+    With deadline_sec set, the whole call — interpreter/DNS/connect/headers/
+    streamed body, retries, backoff, host pacing and cleanup included — is
+    bounded by that many seconds (monotonic clock) through the fixed-function
+    supervised child: DNS and address validation run inside the child, the
+    parent never resolves. ``transport`` injects an explicit boundary seam
+    (fixture workers); it is not an env bypass. ``prefix_bytes`` reads at
+    most that many bytes and reports ``body_complete`` — a bounded prefix is
+    never a full-download rejection or a complete dataset. Without
+    deadline_sec the historical in-process session path is retained for
+    legacy compatibility; governed payload/preview/assessment callers always
+    supply one.
     """
+    if deadline_sec is not None:
+        return _supervised_request(
+            url, headers=headers, max_retries=max_retries,
+            backoff_base=backoff_base, timeout=timeout, stream=stream,
+            allow_redirects=allow_redirects, public_only=public_only,
+            max_body_bytes=max_body_bytes, deadline_sec=deadline_sec,
+            prefix_bytes=prefix_bytes, transport=transport)
     last_error: Optional[Exception] = None
     last_response: Optional[requests.Response] = None
     attempt = 0
@@ -175,8 +313,23 @@ def request_with_retry(
             )
         try:
             transport = public_session if public_only else session
-            response = transport.get(url, headers=headers, timeout=timeout, stream=stream, allow_redirects=allow_redirects)
+            effective_timeout = timeout
+            if deadline_sec is not None:
+                remaining = _remaining()
+                # Clamp the per-attempt socket budget to the remaining absolute
+                # budget; a tiny positive floor keeps requests' timeout contract.
+                effective_timeout = max(0.05, min(float(timeout), remaining))
+            response = transport.get(url, headers=headers, timeout=effective_timeout, stream=stream, allow_redirects=allow_redirects)
             _METRICS["requests"] += 1
+            if _deadline_exceeded():
+                # TIME-001: a response that arrives after the absolute deadline
+                # is not a success, whatever its status — the call is TIMEOUT.
+                if getattr(response, "raw", None) is not None:
+                    response.close()
+                raise DataFetchError(
+                    f"Deadline of {deadline_sec:.0f}s exceeded for {_public_error_url(url)} before completion.",
+                    code="TIMEOUT",
+                )
             if not stream:
                 _METRICS["bytes"] += len(response.content or b"")
                 if max_body_bytes is not None and len(response.content or b"") > max_body_bytes:

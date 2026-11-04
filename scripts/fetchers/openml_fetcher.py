@@ -2,6 +2,26 @@ from typing import Dict, Optional, Any
 import pandas as pd
 from scripts.base import BaseFetcher
 
+
+def _normalize_nominal_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Preserve label values and missingness; drop the categorical wrapper.
+
+    The openml SDK (>=0.15 with pandas 3) returns nominal features and
+    targets as CategoricalDtype, which the generic extractor protocol
+    rejects by design. The reviewed provider normalizes at its own
+    boundary: values become their exact category labels and missing values
+    stay missing. Label values and missingness are preserved; only pandas
+    category ordering metadata is dropped. Columns are iterated and
+    assigned by position (isetitem) so duplicate column labels cannot turn
+    a lookup into a DataFrame or retarget the assignment.
+    """
+    for position in range(len(frame.columns)):
+        column = frame.iloc[:, position]
+        if isinstance(column.dtype, pd.CategoricalDtype):
+            frame.isetitem(position, column.astype(object))
+    return frame
+
+
 class OpenMLFetcher(BaseFetcher):
     """Fetcher for machine learning datasets from OpenML.
 
@@ -133,4 +153,4 @@ class OpenMLFetcher(BaseFetcher):
                 X = pd.concat([X, y], axis=1)
 
         print(f"[Extract] Dataset downloaded. Routing to centralized output directory: {self.outdir}")
-        return X
+        return _normalize_nominal_columns(X)

@@ -1,6 +1,8 @@
 """Built-in source metadata shared by discovery and registration."""
 from typing import Dict
 
+INSIDE_AIRBNB_DATA_PAGE = "https://insideairbnb.com/get-the-data/"
+
 # Per-source discovery metadata for --list-sources (the agent-facing contract):
 # what a query means, an example, and whether credentials are needed.
 SOURCE_INFO: Dict[str, Dict[str, str]] = {
@@ -14,7 +16,7 @@ SOURCE_INFO: Dict[str, Dict[str, str]] = {
     "github":     {"platform": "GitHub repositories", "query_format": "free text", "example": "covid", "auth": "recommended (GITHUB_TOKEN or gh CLI)"},
     "kaggle":     {"platform": "Kaggle Datasets", "query_format": "owner/dataset-slug", "example": "uciml/iris", "auth": "KAGGLE_USERNAME + KAGGLE_KEY"},
     "openml":     {"platform": "OpenML", "query_format": "name fragment or numeric dataset ID", "example": "iris", "auth": "none"},
-    "airbnb":     {"platform": "Inside Airbnb", "query_format": "city name", "example": "amsterdam", "auth": "none"},
+    "airbnb":     {"platform": "Inside Airbnb", "query_format": "verified city or official export URL", "example": "amsterdam", "auth": "none", "website": INSIDE_AIRBNB_DATA_PAGE},
     "coingecko":  {"platform": "CoinGecko Crypto Markets", "query_format": "coin id or symbol", "example": "bitcoin", "auth": "none (365-day history cap without key)"},
     "rdatasets":  {"platform": "Rdatasets", "query_format": "package/dataset, unique name, or search words", "example": "datasets/iris", "auth": "none"},
 }

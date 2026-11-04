@@ -331,16 +331,26 @@ def test_request_deadline_aborts_with_coded_timeout():
 
 
 def test_request_deadline_clamps_hostile_retry_after_sleeps():
-    limited = MagicMock(status_code=429, headers={"Retry-After": "3600"}, content=b"")
-    with patch("scripts.http_utils.session") as default_session:
-        default_session.get.return_value = limited
-        # The fake sleep records the clamped duration AND advances the clock.
-        with patch("scripts.http_utils.time.sleep", side_effect=time.sleep) as fake_sleep:
-            with pytest.raises(DataFetchError) as caught:
-                request_with_retry("https://example.com/limited", max_retries=3, deadline_sec=0.3)
-    assert caught.value.code == "TIMEOUT"
-    assert fake_sleep.call_count == 1
-    assert 0 < fake_sleep.call_args.args[0] <= 0.3  # the hostile 3600s was clamped
+    limited = requests.Response()
+    limited.status_code = 429
+    limited.headers["Retry-After"] = "3600"
+    limited._content = b""
+    limited.raw = io.BytesIO(b"")
+    # Network I/O moved into the supervised transport; substitute only that
+    # external HTTP boundary, with a real Response and observable body close.
+    try:
+        with patch("scripts.adapters.http_transport.SupervisedHTTPTransport.fetch",
+                   return_value=limited):
+            # Record the bounded sleep while allowing the real clock to advance.
+            with patch("scripts.http_utils.time.sleep", side_effect=time.sleep) as fake_sleep:
+                with pytest.raises(DataFetchError) as caught:
+                    request_with_retry("https://example.com/limited", max_retries=3, deadline_sec=0.3)
+        assert limited.raw.closed, "A retry must close its HTTP response"
+        assert fake_sleep.call_count == 1
+        assert 0 < fake_sleep.call_args.args[0] <= 0.3  # the hostile 3600s was clamped
+        assert caught.value.code == "TIMEOUT"
+    finally:
+        limited.close()
 
 
 def test_read_bounded_body_caps_streamed_metadata():

@@ -22,7 +22,7 @@ The pipeline separates fetch decisions from network requests, terminal prompts, 
 - **CSV and Markdown profiles:** Providers return tabular data with their own field names. Each saved CSV gets a `<dataset_name>_description.md` with source metadata, sample rows, missing-value counts, inferred types, and statistics. The pipeline does not align schemas across platforms.
 - **Local credentials:** Fetch commands read `~/.config/data-fetcher-pipeline/config.json`. This is a plain JSON file, with owner-only permissions where the operating system supports them. The repository contains `config_template.json` with empty values. Keep your filled config on your own computer and out of Git.
 - **Shared workflow:** The CLI handles output folders, previews, row limits, conversion, and source registration so each provider can focus on fetching data.
-- **Trust boundary:** The pipeline fetches data only: files, HTML tables, and documented provider API responses. Fetched content is parsed, hashed, and saved as data; it is never executed and never read as instructions. Dataset values reach the human through on-disk artifacts (`_human_preview.md`, `*_raw.csv`, `*_description.md`, `manifest.jsonl`); agent-facing output (stdout, stderr, JSON envelopes) carries counts, paths, hashes, and sanitized warnings, never sample cell values or column names. See `SECURITY.md`.
+- **Trust boundary:** The pipeline fetches data only: files, HTML tables, and documented provider API responses. Fetched content is parsed, hashed, and saved as data; it is never executed and never read as instructions. Dataset values reach the human through on-disk artifacts (`_human_preview.md`, `*_raw.csv`, `*_description.md`, `manifest.jsonl`), and the chat host renders the bounded escaped preview table natively in the conversation; agent-facing output (stdout, stderr, JSON envelopes) carries counts, paths, hashes, and sanitized warnings, never sample cell values or column names. See `SECURITY.md`.
 - **Custom extractor execution:** The only non-pipeline code that runs is a custom extractor written and reviewed locally (never downloaded from a site). It executes out-of-process after the human approves a bounded preview (`--approve-preview`), inside an isolated `-I` subprocess with a scrubbed environment, a static AST gate, and runtime audit hooks. These checks are fail-fast defense-in-depth, not a sandbox.
 
 The pipeline does not impute missing values or clean data for analysis. Parsing can infer types and change text formatting in the normalized CSV, such as leading zeros. For direct CSV, TSV, and gzip downloads, the separate original file preserves the downloaded bytes.
@@ -60,9 +60,10 @@ registration removes its temporary script and preserves the dataset.
 For chat agents, follow [the conversation workflow](references/conversation-workflow.md).
 Use `--preview-only --yes --non-interactive --json-output` before asking for final
 approval. The preview JSON envelope carries no sample cell values and no column
-names: the human alone reads the sample from the private `_human_preview.md`
-artifact written beside the fetch, and agents must not read that file or the
-dataset artifacts. Pass a bespoke extractor with `--extractor-script PATH`
+names: the sample lives in the private inert Markdown artifact (`_human_preview.md`)
+written beside the fetch, the chat host renders that bounded escaped table
+natively in the conversation, and agents must not read the dataset
+artifacts. Pass a bespoke extractor with `--extractor-script PATH`
 (bounded preview first) and the approved full fetch presents
 `--approve-preview PREVIEW_ID`, which runs the exact staged bytes. Code execution
 happens only behind that receipt gate, and the pipeline never loads instructions
@@ -171,7 +172,7 @@ docker run \
 | **World Bank** | `worldbank` | Global development metrics, socioeconomic indicators, and climate data. | Policy researchers conducting global cross-country studies. |
 | **Eurostat** | `eurostat` | Official European Union statistical data repository. | Economists analyzing official EU economic statistics. |
 | **Data.gov** | `datagov` | US government open data portal via the GSA Catalog API v4 (DCAT). | Public policy analysts querying federal agency datasets. |
-| **Inside Airbnb** | `airbnb` | City listings from listings.csv.gz. Reviews and calendars are not fetched. | Real estate analysts investigating housing and tourism trends. |
+| **[Inside Airbnb](https://insideairbnb.com/get-the-data/)** | `airbnb` | City listings from verified official exports (curated registry or explicit `data.insideairbnb.com` URL; the index page is not scraped). Reviews and calendars are not fetched. | Real estate analysts investigating housing and tourism trends. |
 | **GitHub Data** | `github` | Dataset discovery across public GitHub repositories (stars-ranked repo search + CSV tree walk). | Data engineers mining open-source tabular datasets. |
 | **Yahoo Finance** | `yfinance` / `yahoo` | Historical daily open, high, low, close, and volume data. Does not fetch fundamentals. | Quantitative traders building algorithmic trading strategies. |
 | **CoinGecko** | `coingecko` | Cryptocurrency price, market cap, and volume history , no API key required. | Crypto analysts tracking digital-asset market history. |
