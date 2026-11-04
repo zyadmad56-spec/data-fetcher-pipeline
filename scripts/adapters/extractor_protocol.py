@@ -36,16 +36,18 @@ pandas nullable dtypes (``Int64``, ``Float64``, ``boolean``, ``string``).
 Values are written to a headerless CSV (headers travel in the sidecar, so
 duplicate names survive verbatim) with every missing value replaced by a
 per-encode sentinel that is verified not to collide with any string cell; the
-decoder reads raw text (``na_filter=False``) and rebuilds exact dtypes from the
-sidecar. Data frames always decode with a fresh positional ``RangeIndex`` —
-the payload carries values and schema, never a custom index; this is a
-documented property of the transport, not silent degradation.
+decoder reads every field as exact text with the stdlib CSV reader and rebuilds
+exact dtypes from the sidecar. Data frames always decode with a fresh
+positional ``RangeIndex`` — the payload carries values and schema, never a
+custom index; this is a documented property of the transport, not silent
+degradation.
 
 Honest scope: this module is data plumbing. It does not sandbox the worker and
 does not defend against same-user tampering with local files.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -484,6 +486,10 @@ def _choose_sentinel(frame: pd.DataFrame, descriptors: list[dict]) -> str:
                          code=IPC_UNREPRESENTABLE_VALUES)
 
 
+def _decode_nuls(value: str) -> str:
+    return re.sub('\x01([\x01n])', lambda match: '\x00' if match[1] == 'n' else '\x01', value)
+
+
 def encode_frame(frame: pd.DataFrame) -> tuple[bytes, bytes]:
     """Encode a DataFrame as ``(csv_bytes, sidecar_bytes)`` with full fidelity.
 
@@ -505,8 +511,22 @@ def encode_frame(frame: pd.DataFrame) -> tuple[bytes, bytes]:
         'na_rep': sentinel,
         'rows': int(len(frame)),
     }
+    string_columns = [position for position, descriptor in enumerate(descriptors)
+                      if descriptor['kind'] in ('string', 'string_dtype')]
+    payload = frame
+    if any(frame.iloc[:, position].str.contains('\x00', regex=False, na=False).any()
+           for position in string_columns):
+        # Python 3.10's CSV reader and writer cannot carry literal NUL bytes.
+        # Double the escape character so literal escape sequences round-trip.
+        sidecar['escaped_nul'] = True
+        payload = frame.copy()
+        for position in string_columns:
+            column = frame.iloc[:, position].str.replace('\x01', '\x01\x01', regex=False)
+            column = column.str.replace('\x00', '\x01n', regex=False)
+            payload.isetitem(position, column)
     buffer = io.StringIO()
-    frame.to_csv(buffer, header=False, index=False, na_rep=sentinel, lineterminator='\n')
+    # CRLF makes the CSV writer quote fields containing either newline byte.
+    payload.to_csv(buffer, header=False, index=False, na_rep=sentinel, lineterminator='\r\n')
     return buffer.getvalue().encode('utf-8'), json.dumps(sidecar, ensure_ascii=False).encode('utf-8')
 
 
@@ -517,12 +537,14 @@ def _parse_sidecar(sidecar_bytes: bytes) -> dict:
         raise _reject(f'sidecar is not valid JSON: {exc}') from exc
     if not isinstance(data, dict):
         raise _reject('sidecar: expected a JSON object.')
-    unknown = set(data) - {'format', 'columns', 'na_rep', 'rows'}
+    unknown = set(data) - {'format', 'columns', 'na_rep', 'rows', 'escaped_nul'}
     if unknown or data.get('format') != _FRAME_FORMAT:
         raise _reject(f'sidecar: unsupported format or unknown keys {sorted(unknown)}.')
     sentinel = data.get('na_rep')
     if not isinstance(sentinel, str) or not 1 <= len(sentinel) <= 64:
         raise _reject('sidecar.na_rep: expected a short sentinel string.')
+    if 'escaped_nul' in data and data['escaped_nul'] is not True:
+        raise _reject('sidecar.escaped_nul: expected true when present.')
     rows = data.get('rows')
     if isinstance(rows, bool) or not isinstance(rows, int) or rows < 0:
         raise _reject('sidecar.rows: expected a non-negative integer.')
@@ -613,6 +635,44 @@ def _convert_column(series: pd.Series, entry: dict, sentinel: str) -> pd.Series:
     return converted
 
 
+def _read_payload_rows(csv_bytes: bytes, column_count: int) -> list[list[str]]:
+    """Parse the headerless payload into one exact string list per row.
+
+    The stdlib reader is used instead of pandas because the C parser silently
+    truncates a field at an embedded NUL and strips a leading U+FEFF, while
+    the Python engine drops empty records; either would corrupt supported
+    string values. ``strict=True`` keeps malformed quoting a hard failure
+    rather than a silently repaired value.
+    """
+    try:
+        text = csv_bytes.decode('utf-8')
+    except UnicodeDecodeError as exc:
+        raise _reject('payload is not valid UTF-8 text.',
+                      code=IPC_PAYLOAD_CORRUPT) from exc
+    # The stdlib reader refuses fields beyond 128K characters by default;
+    # payload cells are bounded by the transfer cap, not by that default.
+    # Older payloads can contain literal NULs written by a newer interpreter.
+    legacy_nuls = '\x00' in text
+    if legacy_nuls:
+        text = text.replace('\x01', '\x01\x01').replace('\x00', '\x01n')
+    previous_field_limit = csv.field_size_limit()
+    csv.field_size_limit(max(previous_field_limit, len(text)))
+    try:
+        rows = list(csv.reader(io.StringIO(text, newline=''), strict=True))
+    except csv.Error as exc:
+        raise _reject(f'payload is not parseable CSV: {exc}',
+                      code=IPC_PAYLOAD_CORRUPT) from exc
+    finally:
+        csv.field_size_limit(previous_field_limit)
+    for row in rows:
+        if len(row) != column_count:
+            raise _reject('payload: column count mismatch with sidecar.',
+                          code=IPC_PAYLOAD_CORRUPT)
+        if legacy_nuls:
+            row[:] = [_decode_nuls(value) for value in row]
+    return rows
+
+
 def decode_frame(csv_bytes: bytes, sidecar_bytes: bytes) -> pd.DataFrame:
     """Decode ``(csv_bytes, sidecar_bytes)`` produced by :func:`encode_frame`.
 
@@ -634,17 +694,21 @@ def decode_frame(csv_bytes: bytes, sidecar_bytes: bytes) -> pd.DataFrame:
         frame.columns = [entry['name'] for entry in columns]
         frame.index = pd.RangeIndex(0)
         return frame
-    try:
-        raw = pd.read_csv(io.BytesIO(csv_bytes), header=None,
-                          names=[f'c{position}' for position in range(len(columns))],
-                          dtype=str, na_filter=False, keep_default_na=False, engine='c')
-    except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError) as exc:
-        raise _reject(f'payload is not parseable CSV: {exc}', code=IPC_PAYLOAD_CORRUPT) from exc
-    if len(raw) != sidecar['rows']:
+    rows = _read_payload_rows(csv_bytes, len(columns))
+    if len(rows) != sidecar['rows']:
         raise _reject(f"payload: sidecar declares {sidecar['rows']} rows but payload has "
-                      f'{len(raw)}.', code=IPC_PAYLOAD_CORRUPT)
-    if len(raw.columns) != len(columns):
-        raise _reject('payload: column count mismatch with sidecar.', code=IPC_PAYLOAD_CORRUPT)
+                      f'{len(rows)}.', code=IPC_PAYLOAD_CORRUPT)
+    if not columns:
+        # A payload with records but no columns carries nothing decodable.
+        raise _reject('payload: expected at least one column for a non-empty frame.',
+                      code=IPC_PAYLOAD_CORRUPT)
+    raw = pd.DataFrame(rows, dtype=object,
+                       columns=[f'c{position}' for position in range(len(columns))])
+    if sidecar.get('escaped_nul'):
+        for position, entry in enumerate(columns):
+            if entry['kind'] in ('string', 'string_dtype'):
+                column = raw.iloc[:, position].map(_decode_nuls)
+                raw.isetitem(position, column)
     parts = [_convert_column(raw.iloc[:, position], entry, sentinel)
              for position, entry in enumerate(columns)]
     frame = pd.concat(parts, axis=1)

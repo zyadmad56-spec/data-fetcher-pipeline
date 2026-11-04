@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0.0"]
+dev = ["pytest>=7.0.0", "setuptools>=77.0.3", "wheel"]
 parquet = ["pyarrow>=14.0.0"]
 
 [project.scripts]
@@ -31,3 +31,6 @@ data-fetcher = "scripts.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["scripts*"]
+
+[tool.setuptools.package-data]
+scripts = ["resources/*.json"]

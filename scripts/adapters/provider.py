@@ -73,6 +73,8 @@ class FetcherProvider:
 
     def release_payload(self) -> None:
         payload = self.fetcher._temp_payload
+        if payload and getattr(self.fetcher, '_preview_payload_owned', False):
+            return  # preview persistence reads the owned bytes after run()
         if payload:
             try:
                 Path(payload).unlink(missing_ok=True)

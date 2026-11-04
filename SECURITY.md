@@ -14,8 +14,9 @@ model integration, no telemetry, and no outbound call other than the fetches
 described under *Network egress* below.
 
 **Third-party content reaches the human only.** Every fetched payload path ends
-in on-disk artifacts the human opens themselves: `_human_preview.md` (the
-bounded preview), `*_raw.csv` (the normalized dataset), `*_source_*` (retained
+in on-disk artifacts the human sees: `_human_preview.md` (the bounded preview,
+rendered natively in the conversation by the chat host or opened directly),
+`*_raw.csv` (the normalized dataset), `*_source_*` (retained
 original bytes), `*_description.md` (the profile), and `manifest.jsonl`.
 Agent-facing channels carry metadata only: row/column counts, dtypes, file
 paths, SHA-256 hashes, transfer scope, HTTP status codes, and sanitized,
@@ -106,9 +107,18 @@ runs approve at the sample prompt and create the receipt internally.
 
 ## Human-only preview
 
-`--preview-only` writes the escaped sample (5 rows, all column names, source
-URL, transfer notes) to a private `_human_preview.md` artifact and returns a
-JSON envelope with **zero sample cell values and zero column names**. Error
+`--preview-only` writes the escaped bounded sample (first 5 rows x first 30
+columns, full column count, source URL, transfer notes) to a private inert
+Markdown preview artifact (`_human_preview.md`) and returns a
+JSON envelope with **zero sample cell values and zero column names**. The
+chat host renders that Markdown table natively inside the conversation: every
+cell is inert escaped text, the agent copies the table verbatim, and no
+untrusted text becomes an active link or instruction; the human can also open
+the artifact directly. The envelope's `source_url_display` carries the full
+URL path only when the source URL is verified against the product's reviewed
+export registries; user-typed URLs get origin-only display there, since
+private tokens can appear in URL paths (credentials, query strings and
+fragments are always dropped). Error
 messages reaching JSON envelopes are scrubbed (URL credentials/query strings,
 response bodies, offending-CSV-row text removed; length-capped; recovery hint
 appended). Two sanitized plain-text residuals remain by design and are stated
@@ -118,10 +128,12 @@ length cap), and metadata fields such as `resolved_title` or `source_url` can
 carry a provider-supplied plain-text title/URL (escape-neutralized, never
 markup-active). Dataset cell values never reach those channels. Escaping is
 presentation-layer only — dataset cell values are never
-modified. Note honestly: a file on disk cannot stop a host agent with explicit
-file-read tools from opening `_human_preview.md`; the conversation workflow
-forbids it, and enforcement of "human alone" for automatic channels
-(stdout/stderr/JSON) is technical, while file access is cooperative.
+modified. Note honestly: the bounded display sample transits the agent's
+context when the host renders it in chat (the user-directed native table
+route), while everything beyond it (the stored payload, full datasets,
+hidden fields) stays out of agent-visible channels; enforcement of that
+boundary for automatic channels (stdout/stderr/JSON) is technical, and file
+access to the remaining artifacts stays cooperative.
 
 ## SHA-256 limits
 

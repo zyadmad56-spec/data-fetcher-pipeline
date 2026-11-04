@@ -12,6 +12,9 @@ class FetchRequest:
     columns: list[str] = field(default_factory=list)
     rows: int = 0
     output_format: str = 'csv'
+    #: The surviving typed interview context (InterviewContext) for callers
+    #: that need the collected requirements, not just the flattened request.
+    context: object | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,9 @@ class FetchState:
     complete: bool = True
     completeness_warnings: list[str] = field(default_factory=list)
     artifact_warnings: list[str] = field(default_factory=list)
+    #: Locally authored advisory text (mark_degraded, artifact write failures).
+    #: The envelope forwards these; mixed-origin slots are withheld to counts.
+    degraded_warnings: list[str] = field(default_factory=list)
     resolved_title: str | None = None
     truncation: dict | None = None
     last_sha256: str = ''

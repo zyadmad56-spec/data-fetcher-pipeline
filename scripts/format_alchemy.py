@@ -62,7 +62,20 @@ class FormatAlchemyEngine:
         os.close(descriptor)
         return path
 
-    def csv_to_sqlite(self) -> None:
+    @staticmethod
+    def _read_csv_lexical(source_path: str, **kwargs):
+        """Read a standalone CSV as exact text (CONTRACTS conversion policy).
+
+        Without a trusted schema there is no honest inference: leading zeros,
+        literal NA/null tokens and empty strings are values, and an invisible
+        numeric cast would corrupt them.  Callers with a typed intermediate
+        (the temp-CSV hops from Parquet/JSON/SQLite) pass through the
+        inference routes instead.
+        """
+        return pd.read_csv(source_path, dtype=str, keep_default_na=False,
+                           na_filter=False, **kwargs)
+
+    def csv_to_sqlite(self, lexical: bool = True) -> None:
         """Read CSV in chunks and ingest into SQLite database."""
         # Pre-flight guard: SQLite hard-caps tables at 2000 columns (SQLITE_MAX_COLUMN).
         # Without this, ingestion dies mid-chunks with a cryptic "too many columns"
@@ -74,12 +87,13 @@ class FormatAlchemyEngine:
                 f"{MAX_SQLITE_COLUMNS}. Export to Parquet or CSV instead.",
                 code="SIZE_LIMIT",
             )
+        reader = self._read_csv_lexical if lexical else pd.read_csv
         try:
             with sqlite3.connect(self.db_filepath) as conn:
                 chunksize = 100000
                 first_chunk = True
                 safe_table = self._safe_table_name()
-                for chunk in pd.read_csv(self.csv_filepath, chunksize=chunksize, low_memory=False):
+                for chunk in reader(self.csv_filepath, chunksize=chunksize, low_memory=False):
                     chunk.to_sql(safe_table, conn, if_exists="replace" if first_chunk else "append", index=False)
                     first_chunk = False
         except pd.errors.EmptyDataError as e:
@@ -162,7 +176,7 @@ class FormatAlchemyEngine:
 
         print(f"[FormatAlchemy] Exported SQL table to Excel at {self.excel_filepath}")
 
-    def csv_to_excel_direct(self) -> None:
+    def csv_to_excel_direct(self, lexical: bool = True) -> None:
         """Stream CSV straight into Excel (write-only) WITHOUT the SQLite hop.
 
         Keeps the 16,384-column Excel ceiling reachable (SQLite's 2,000-column
@@ -182,10 +196,11 @@ class FormatAlchemyEngine:
         for idx, col in enumerate(header.columns):
             ws.column_dimensions[get_column_letter(idx + 1)].width = min(max(len(str(col)) + 2, 12), 100)
 
+        reader = self._read_csv_lexical if lexical else pd.read_csv
         written = 0
         total_source_rows = 0
         try:
-            for chunk in pd.read_csv(self.csv_filepath, chunksize=10000, low_memory=False):
+            for chunk in reader(self.csv_filepath, chunksize=10000, low_memory=False):
                 total_source_rows += len(chunk)
                 values = chunk.astype(object).where(pd.notna(chunk), None)
                 for row in values.itertuples(index=False, name=None):
@@ -302,10 +317,11 @@ class FormatAlchemyEngine:
             raise RuntimeError(f"Failed to write CSV: {exc}") from exc
 
     @classmethod
-    def csv_to_parquet(cls, source_path: str, target_path: str) -> str:
+    def csv_to_parquet(cls, source_path: str, target_path: str, lexical: bool = True) -> str:
         """Convert CSV dataset to Parquet columnar format."""
+        reader = cls._read_csv_lexical if lexical else pd.read_csv
         try:
-            df = pd.read_csv(source_path)
+            df = reader(source_path)
         except OSError as exc:
             raise RuntimeError(f"Failed to read source CSV: {exc}") from exc
 
@@ -373,14 +389,50 @@ class FormatAlchemyEngine:
             temporary.unlink(missing_ok=True)
         return target_path
 
+    @staticmethod
+    def _raw_header_names(source_path: str) -> "list[str] | None":
+        """First CSV record as exact field names, or None when unavailable.
+
+        pandas always mangles duplicate header names on read, so duplicate
+        detection must look at the raw record.  Line-buffered iteration keeps
+        memory bounded even for a quoted multi-line header record.
+        """
+        import csv as _csv
+        try:
+            with open(source_path, "r", encoding="utf-8", newline="") as stream:
+                for record in _csv.reader(stream):
+                    if record:
+                        return record
+        except (OSError, UnicodeDecodeError, _csv.Error):
+            return None
+        return None
+
     @classmethod
-    def csv_to_json(cls, source_path: str, target_path: str) -> str:
-        df = pd.read_csv(source_path)
+    def csv_to_json(cls, source_path: str, target_path: str, lexical: bool = True) -> str:
+        reader = cls._read_csv_lexical if lexical else pd.read_csv
+        df = reader(source_path)
+        raw_names = cls._raw_header_names(source_path)
+        if ((raw_names is not None and len(raw_names) != len(set(raw_names)))
+                or df.columns.duplicated().any()):
+            # JSON record objects cannot hold two distinct columns under one
+            # key: fail before any output instead of silently collapsing the
+            # columns with dict(zip(...)) (CONTRACTS conversion policy).
+            raise DataFetchError(
+                "Duplicate column names cannot be represented as JSON record "
+                "objects without loss. The source is unchanged.",
+                code="CONVERSION_LOSS_RISK",
+            )
         return cls._write_json_records(df, target_path)
 
     @classmethod
-    def convert(cls, source_path: str, target_format: str, overwrite: bool = False) -> str:
-        """Convert source file to target format. Returns output filepath."""
+    def convert(cls, source_path: str, target_format: str, overwrite: bool = False,
+                lexical: bool = True) -> str:
+        """Convert source file to target format. Returns output filepath.
+
+        ``lexical=True`` (the standalone default) preserves exact text in
+        CSV-source routes; pipeline callers pass ``lexical=False`` because the
+        pipeline's own normalized CSV carries its typed inference contract.
+        """
         path = Path(source_path)
         if not path.exists():
             raise FileNotFoundError(f"Source file not found: {source_path}")
@@ -426,7 +478,7 @@ class FormatAlchemyEngine:
                         f"Intermediate output already exists: {engine.excel_filepath}. Pass --overwrite to replace it.",
                         code="INVALID_OUTPUT",
                     )
-                engine.csv_to_excel_direct()
+                engine.csv_to_excel_direct(lexical=lexical)
                 if engine.excel_filepath != out_path:
                     os.replace(engine.excel_filepath, out_path)
                 return out_path
@@ -439,7 +491,10 @@ class FormatAlchemyEngine:
                     }.get(source_ext, cls.sqlite_to_csv)
                     to_csv(source_path, temp_csv)
                     engine = cls(temp_csv)
-                    engine.csv_to_excel_direct()
+                    # The temp CSV came from a typed source; keep today's
+                    # inference here.  The lexical default is for standalone
+                    # user CSVs, which have no trusted schema.
+                    engine.csv_to_excel_direct(lexical=False)
                     os.replace(engine.excel_filepath, out_path)  # canonical name, no _temp leak
                     return out_path
                 finally:
@@ -455,7 +510,7 @@ class FormatAlchemyEngine:
                         f"Output already exists: {engine.db_filepath}. Pass --overwrite to replace it.",
                         code="INVALID_OUTPUT",
                     )
-                engine.csv_to_sqlite()
+                engine.csv_to_sqlite(lexical=lexical)
                 return engine.db_filepath
             else:
                 raise ValueError(f"Conversion from {source_ext} to SQLite requires a CSV source.")
@@ -463,13 +518,13 @@ class FormatAlchemyEngine:
         elif target_format == "parquet":
             out_path = f"{base_path}.parquet"
             if source_ext == "csv":
-                return cls.csv_to_parquet(source_path, out_path)
+                return cls.csv_to_parquet(source_path, out_path, lexical=lexical)
             elif source_ext in ["json", "db", "sqlite", "sqlite3"]:
                 temp_csv = cls._temporary_csv_path(path.parent)
                 try:
                     to_csv = cls.json_to_csv if source_ext == "json" else cls.sqlite_to_csv
                     to_csv(source_path, temp_csv)
-                    return cls.csv_to_parquet(temp_csv, out_path)
+                    return cls.csv_to_parquet(temp_csv, out_path, lexical=False)
                 finally:
                     Path(temp_csv).unlink(missing_ok=True)
             else:
@@ -479,14 +534,14 @@ class FormatAlchemyEngine:
             out_path = f"{base_path}.json"
             if source_ext == "csv":
                 try:
-                    return cls.csv_to_json(source_path, out_path)
+                    return cls.csv_to_json(source_path, out_path, lexical=lexical)
                 except OSError as exc:
                     raise RuntimeError(f"Conversion to JSON failed: {exc}") from exc
             elif source_ext in ["db", "sqlite", "sqlite3"]:
                 temp_csv = cls._temporary_csv_path(path.parent)
                 try:
                     cls.sqlite_to_csv(source_path, temp_csv)
-                    return cls.csv_to_json(temp_csv, out_path)
+                    return cls.csv_to_json(temp_csv, out_path, lexical=False)
                 except OSError as exc:
                     raise RuntimeError(f"Conversion to JSON failed: {exc}") from exc
                 finally:

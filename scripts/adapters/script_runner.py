@@ -191,7 +191,7 @@ class SubprocessExtractorRunner:
     Contract: the caller passes in-memory script bytes it has ALREADY verified
     (checksum + :func:`inspect_extractor_ast`). The runner stages those exact
     bytes into a ``0o700`` temp workspace, scrubs the child environment, and
-    spawns ``[sys.executable, '-I', worker, job.json]`` with ``shell=False``,
+    spawns ``[sys.executable, '-I', '-B', worker, job.json]`` with ``shell=False``,
     ``stdin=DEVNULL`` and ``close_fds=True``. The whole job (interpreter start
     included) is bounded by ``request.deadline_sec`` wall-clock; the child is
     killed on timeout. stdout/stderr capture is capped at 64 KiB each; a flood
@@ -277,7 +277,9 @@ class SubprocessExtractorRunner:
         _chmod_quiet(job, 0o600)
 
     def _execute(self, workspace: Path, request: WorkerRequest) -> WorkerResult:
-        argv = [sys.executable, '-I', str(self.worker_path), str(workspace / JOB_NAME)]
+        # Isolated mode ignores PYTHONDONTWRITEBYTECODE. Avoid import cache
+        # writes outside the workspace when a dependency is loaded lazily.
+        argv = [sys.executable, '-I', '-B', str(self.worker_path), str(workspace / JOB_NAME)]
         stdout: bytearray = bytearray()
         stderr: bytearray = bytearray()
         try:

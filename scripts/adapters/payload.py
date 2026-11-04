@@ -1,4 +1,10 @@
-"""Bounded HTTP previews and streamed payload cache; no approval policy."""
+"""Bounded HTTP previews and streamed payload cache; no approval policy.
+
+All transfers run through the supervised HTTP port with explicit deadlines:
+the preview is a bounded prefix intent, the full download carries its
+``max_bytes`` cap inside the supervised job, and byte/request/retry metrics
+are counted once at the HTTP layer.
+"""
 import os
 import time
 from pathlib import Path
@@ -25,8 +31,15 @@ class PayloadReader:
 
     def _bounded_csv_preview(self, url: str) -> pd.DataFrame:
         import io
+        # Explicit prefix intent: the supervised job reads at most
+        # preview_bytes and closes the upstream promptly; a huge declared
+        # tail is not rejected and a bounded prefix is never cached as the
+        # complete dataset. Exhaustiveness comes from the response contract
+        # (``body_complete``); legacy in-process doubles without it keep the
+        # conservative not-cached behavior.
         response = self.request(url, headers=self.spec.headers, stream=True,
-                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS)
+                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS,
+                                prefix_bytes=self.spec.preview_bytes)
         try:
             if response.status_code != 200:
                 raise DataFetchError(f'HTTP {response.status_code} fetching preview.', code='PROVIDER_ERROR')
@@ -41,19 +54,37 @@ class PayloadReader:
             payload = self._complete_record_prefix(payload)
         return pd.read_csv(io.BytesIO(payload), sep=self.spec.separator, nrows=5, low_memory=False)
 
+    @staticmethod
+    def _boundary_metered(response) -> bool:
+        """True when the HTTP boundary already reported this response's size:
+        the local spool read is then a copy, not upstream delivery, and must
+        not be re-counted. Boundary fixtures without a reported size count
+        their chunk reads here — the only observable delivery point."""
+        flag = getattr(response, 'body_bytes', None)
+        return isinstance(flag, int) and not isinstance(flag, bool)
+
+    @staticmethod
+    def _exhausted(response, default: bool) -> bool:
+        # The completeness flag is trusted only as a real bool: boundary
+        # fixtures auto-create attributes that must not flip caching.
+        flag = getattr(response, 'body_complete', None)
+        return flag if isinstance(flag, bool) else default
+
     def _preview_prefix(self, response) -> tuple[bytearray, bool]:
         payload = bytearray()
         deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+        meter = not self._boundary_metered(response)
         for chunk in response.iter_content(16384):
             if time.monotonic() >= deadline:
                 raise DataFetchError(
                     f'Preview transfer exceeded the {DOWNLOAD_DEADLINE_SECONDS:.0f}s deadline.', code='TIMEOUT')
-            add_metrics_bytes(len(chunk))
+            if meter:
+                add_metrics_bytes(len(chunk))
             remaining = self.spec.preview_bytes - len(payload)
             payload.extend(chunk[:remaining])
             if len(payload) >= self.spec.preview_bytes:
-                return payload, False
-        return payload, True
+                return payload, self._exhausted(response, False)
+        return payload, self._exhausted(response, True)
 
     def _complete_record_prefix(self, payload: bytearray) -> bytearray:
         # Parsing a bounded incomplete quoted record must fail rather than invent rows.
@@ -70,14 +101,24 @@ class PayloadReader:
         deadline.
         """
         target = Path(self.state.outdir) / (sanitize_name(self.state.query) + '_payload.tmp')
+        # The full-transfer cap travels INTO the supervised job so the child
+        # enforces it during the transfer; the parent loop below stays the
+        # same contract legacy boundary fixtures exercise.
         response = self.request(url, headers=headers or self.spec.headers, stream=True,
-                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS)
+                                public_only=True, deadline_sec=DOWNLOAD_DEADLINE_SECONDS,
+                                max_body_bytes=self.spec.max_bytes)
         try:
             if response.status_code != 200:
                 raise ValueError(f'HTTP {response.status_code} while fetching payload.')
             content_length = response.headers.get('Content-Length')
+            # Declared-size fast reject (the supervised child enforces the
+            # same cap during the transfer; this keeps the parent honest for
+            # boundary fixtures and avoids opening any spool for a body the
+            # cap forbids outright).
             if content_length and content_length.isdigit() and (int(content_length) > self.spec.max_bytes):
-                raise DataFetchError(f'Payload exceeds the {self.spec.max_bytes // (1024 * 1024)} MB download cap (Content-Length: {content_length}).', code='SIZE_LIMIT')
+                raise DataFetchError(
+                    f'Payload exceeds the {self.spec.max_bytes // (1024 * 1024)} MB download cap '
+                    f'(Content-Length: {content_length}).', code='SIZE_LIMIT')
             self._stream_payload(response, target)
         except BaseException:
             response.close()
@@ -86,6 +127,27 @@ class PayloadReader:
         response.close()
         self.state._temp_payload = target
         return target
+
+    def _stream_payload(self, response, target: Path) -> None:
+        written = 0
+        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
+        meter = not self._boundary_metered(response)
+        with open(target, 'wb') as stream:
+            for chunk in response.iter_content(1024 * 1024):
+                if time.monotonic() >= deadline:
+                    raise DataFetchError(
+                        f'Payload transfer exceeded the {DOWNLOAD_DEADLINE_SECONDS:.0f}s deadline mid-stream.',
+                        code='TIMEOUT')
+                written += len(chunk)
+                if meter:
+                    add_metrics_bytes(len(chunk))
+                if written > self.spec.max_bytes:
+                    raise DataFetchError(
+                        f'Payload exceeded the {self.spec.max_bytes // (1024 * 1024)} MB download cap mid-stream.',
+                        code='SIZE_LIMIT')
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def _consume_payload_csv(self, **read_kwargs) -> pd.DataFrame:
         """Apply the requested row count while parsing, before materializing the file."""
@@ -100,21 +162,3 @@ class PayloadReader:
             temp, sep=self.spec.separator, compression=self.spec.compression,
             nrows=limit, low_memory=False, **read_kwargs)
 
-    def _stream_payload(self, response, target: Path) -> None:
-        written = 0
-        deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
-        with open(target, 'wb') as stream:
-            for chunk in response.iter_content(1024 * 1024):
-                if time.monotonic() >= deadline:
-                    raise DataFetchError(
-                        f'Payload transfer exceeded the {DOWNLOAD_DEADLINE_SECONDS:.0f}s deadline mid-stream.',
-                        code='TIMEOUT')
-                written += len(chunk)
-                add_metrics_bytes(len(chunk))
-                if written > self.spec.max_bytes:
-                    raise DataFetchError(
-                        f'Payload exceeded the {self.spec.max_bytes // (1024 * 1024)} MB download cap mid-stream.',
-                        code='SIZE_LIMIT')
-                stream.write(chunk)
-            stream.flush()
-            os.fsync(stream.fileno())

@@ -212,7 +212,19 @@ def _pinned_getaddrinfo_factory(host: str, candidates: list, real_getaddrinfo):
         if host_arg == host:
             answers = []
             for address in candidates:
-                answers.extend(real_getaddrinfo(str(address), port_arg, family, type, proto, flags))
+                # DNS-001: the OS refuses an address literal whose family does
+                # not match the requested one; that refusal must skip the
+                # candidate, not discard the remaining usable answers.
+                if family in (socket.AF_INET, socket.AF_INET6) and address.version != (
+                    4 if family == socket.AF_INET else 6
+                ):
+                    continue
+                try:
+                    answers.extend(real_getaddrinfo(str(address), port_arg, family, type, proto, flags))
+                except socket.gaierror:
+                    continue
+            if not answers:
+                raise socket.gaierror(socket.EAI_NONAME, f"No usable '{host}' answer for the requested address family")
             return answers
         return real_getaddrinfo(host_arg, port_arg, family, type, proto, flags)
 
@@ -277,6 +289,13 @@ def read_bounded_body(response, limit: int) -> str:
             break
         buffer.extend(chunk[:remaining])
     if not buffer:
+        # NET-001: a real streamed response that carried an empty body has
+        # already consumed its raw stream; touching .text again raises
+        # RuntimeError.  An empty body is valid empty content.  The flag is
+        # trusted only as a real bool: test doubles set attributes MagicMock
+        # would auto-create, and their .text fallback must keep working.
+        if getattr(response, "_content_consumed", False) is True:
+            return ""
         text = getattr(response, "text", "")
         if isinstance(text, str) and text:
             return text[:limit]

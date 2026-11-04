@@ -718,12 +718,8 @@ def test_documented_limit_worker_reads_inside_python_prefix_are_allowed_by_desig
     assert result.error_code is None, result.error_summary
 
 
-def test_documented_limit_plain_external_metadata_is_sanitized_not_removed(tmp_path, capsys):
-    """DCAT titles and repository names are injected content. Plain printable
-    metadata text reaches the saved envelope's metadata fields AFTER
-    sanitization (escape sequences stripped, controls encoded, length
-    bounded) — it is NOT content-free. The plan redacts cells/headers/errors;
-    metadata titles are a documented residual surface for the orchestrator."""
+def test_external_catalog_title_does_not_reach_automatic_metadata(tmp_path, capsys):
+    """The current boundary removes arbitrary external titles, including plain text."""
     catalog = {'results': [{'dcat': {'title': CANARY + ' budget', 'distribution': [
         {'format': 'CSV', 'downloadURL': 'https://data.example.gov/budget.csv'}]}}]}
     transport = MagicMock(side_effect=lambda url, **k: (
@@ -740,8 +736,9 @@ def test_documented_limit_plain_external_metadata_is_sanitized_not_removed(tmp_p
     out, err, code = run_cli(capsys, argv, patches=patches)
     envelope = json.loads(out)
     assert envelope['status'] == 'success'
-    assert CANARY in (envelope.get('resolved_title') or '')  # documented residual
-    assert len(envelope['resolved_title']) <= 300
+    assert envelope.get('resolved_title') is None
+    assert CANARY not in out
+    assert CANARY not in err
 
 
 def test_documented_limit_preview_is_bounded_at_five_rows(tmp_path, capsys):

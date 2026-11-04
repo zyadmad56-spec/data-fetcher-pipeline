@@ -47,8 +47,17 @@ class BaseFetcher(FetchState, ABC):
         return payload_reader_for(self, request_with_retry)
 
     def mark_degraded(self, warning: str) -> None:
-        """Flag the fetch as incomplete; surfaces in the JSON envelope and manifest."""
+        """Flag the fetch as incomplete; surfaces in the JSON envelope and manifest.
+
+        Degraded notes are locally authored fetcher text, so they travel in the
+        trusted ``degraded_warnings`` channel rather than the mixed-origin
+        completeness slot the envelope withholds to a count."""
         self.complete = False
+        # Both channels: ``degraded_warnings`` is the trusted locally authored
+        # copy the envelope forwards; the legacy completeness slot keeps the
+        # note for fetcher-internal and manifest consumers.
+        if warning not in self.degraded_warnings:
+            self.degraded_warnings.append(warning)
         self.completeness_warnings.append(warning)
 
     @abstractmethod

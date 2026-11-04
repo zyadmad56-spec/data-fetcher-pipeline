@@ -100,6 +100,6 @@ def file_sha256(path):
     return FileArtifactStore._sha256_file(path)
 
 
-def convert_file(target_format, filepath, overwrite):
+def convert_file(target_format, filepath, overwrite, lexical=True):
     from scripts.adapters.conversion import convert_file as convert
-    return convert(target_format, filepath, overwrite)
+    return convert(target_format, filepath, overwrite, lexical)

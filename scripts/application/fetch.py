@@ -20,6 +20,10 @@ class FetchDataset:
             if not self.state.auto_approve or self.state.preview_only:
                 self._review_sample(metadata)
                 if self.state.preview_only:
+                    # Preview persistence runs right after run() returns and
+                    # needs the owned complete bytes for the store handoff;
+                    # the persistence step owns their cleanup.
+                    self.state._preview_payload_owned = True
                     return None
             return self._extract_and_save()
         finally:

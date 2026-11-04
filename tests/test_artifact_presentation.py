@@ -5,8 +5,12 @@ presentation layers may escape how a value is displayed and pin the stored
 cell TYPE, but never mutate the data itself.
 """
 import io
+import json
+import time
 import zipfile
 from pathlib import Path
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, patch
 
 import openpyxl
 import pandas as pd
@@ -14,6 +18,7 @@ import pytest
 
 from scripts.dataset_profile import ProfileContext, markdown_table, render_profile
 from scripts.errors import DataFetchError
+from scripts.fetchers.fred import FREDFetcher
 from scripts.format_alchemy import (
     FormatAlchemyEngine,
     MAX_XLSX_ENTRIES,
@@ -186,3 +191,83 @@ def test_xlsx_corrupt_file_keeps_original_error(tmp_path):
     fake.write_bytes(b'this is not a zip archive')
     with pytest.raises(zipfile.BadZipFile):
         FormatAlchemyEngine.xlsx_to_csv(str(fake), str(tmp_path / 'out.csv'))
+
+
+def test_excel_write_only_roundtrip(tmp_path: Path) -> None:
+    """Verify write-only Excel generation roundtrips accurately without residual temp files."""
+    column_payload: Dict[str, List[int]] = {f"metric_{idx}": list(range(150)) for idx in range(5)}
+    source_df = pd.DataFrame(column_payload)
+    csv_file = tmp_path / "timeseries_raw.csv"
+    source_df.to_csv(csv_file, index=False)
+
+    start_time = time.perf_counter()
+    converted_path = FormatAlchemyEngine.convert(str(csv_file), "excel")
+    elapsed_duration = time.perf_counter() - start_time
+
+    excel_file = Path(converted_path)
+    staging_file = excel_file.with_name(excel_file.name + ".tmp")
+
+    assert excel_file.is_file()
+    assert not staging_file.exists()
+    assert elapsed_duration < 60.0
+
+    roundtrip_df = pd.read_excel(excel_file, engine="openpyxl")
+    assert len(roundtrip_df) == 150
+
+
+def test_excel_column_cap_guard(tmp_path: Path) -> None:
+    """Verify Excel converter enforces the 16,384 column specification boundary."""
+    oversized_columns: Dict[str, List[int]] = {f"col_{idx}": [1] for idx in range(16385)}
+    wide_df = pd.DataFrame(oversized_columns)
+    csv_file = tmp_path / "oversized_matrix_raw.csv"
+    wide_df.to_csv(csv_file, index=False)
+
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (1,)
+    mock_cursor.description = [(f"col_{idx}",) for idx in range(16385)]
+    mock_connection = MagicMock()
+    mock_connection.cursor.return_value = mock_cursor
+    mock_connection.__enter__.return_value = mock_connection
+
+    with patch.object(FormatAlchemyEngine, "csv_to_sqlite"), \
+         patch("sqlite3.connect", return_value=mock_connection):
+        with pytest.raises(ValueError, match="16384"):
+            FormatAlchemyEngine.convert(str(csv_file), "excel")
+
+
+def test_profiler_bounds_wide_frames(tmp_path: Path) -> None:
+    """Verify markdown profile generation bounds column scans on ultra-wide dataframes."""
+    wide_matrix: Dict[str, List[float]] = {
+        f"sensor_{col_idx}": [float(row_idx) for row_idx in range(50)]
+        for col_idx in range(3000)
+    }
+    wide_df = pd.DataFrame(wide_matrix)
+    fetcher = FREDFetcher("WIDE_INDICATORS", str(tmp_path), {})
+
+    start_time = time.perf_counter()
+    output_path = fetcher.save_csv(wide_df, "wide_indicators_raw.csv")
+    elapsed_duration = time.perf_counter() - start_time
+
+    assert elapsed_duration < 5.0
+    profile_path = Path(output_path).parent / "wide_indicators_description.md"
+    assert profile_path.is_file()
+
+    profile_text = profile_path.read_text(encoding="utf-8")
+    assert "showing the first 30 of 3000 columns" in profile_text
+    assert "Generated At (UTC)" in profile_text
+
+
+def test_manifest_truncation_null_by_default(tmp_path: Path) -> None:
+    """Verify unsliced dataset acquisitions record explicit null truncation in provenance."""
+    fetcher = FREDFetcher("POPULATION", str(tmp_path), {})
+    fetcher.auto_approve = True
+    complete_df = pd.DataFrame({"observation": [10.5, 20.1, 30.8]})
+
+    with patch.object(FREDFetcher, "extract", return_value=complete_df), \
+         patch.object(FREDFetcher, "scout", return_value={"url": "https://fred.stlouisfed.org/series/POPULATION", "size_info": "3"}):
+        fetcher.run()
+
+    manifest_file = Path(fetcher.outdir) / "manifest.jsonl"
+    manifest_record: Dict[str, Any] = json.loads(manifest_file.read_text(encoding="utf-8").strip())
+    assert manifest_record["truncation"] is None
+    assert manifest_record["complete"] is True

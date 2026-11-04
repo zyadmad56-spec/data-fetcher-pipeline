@@ -408,7 +408,7 @@ def test_b9_worker_write_confinement_read_roots_and_scrubbed_env(tmp_path):
         "    leaked = [k for k in os.environ if k in ('GITHUB_TOKEN', "
         "'AWS_SECRET_ACCESS_KEY', 'KAGGLE_KEY', 'API_KEY', 'AUTH_TOKEN')]\n"
         "    return pd.DataFrame({'home': [os.environ.get('HOME', '') or "
-        "os.environ.get('USERPROFILE', '')], 'leaked': [','.join(leaked)]})\n"
+        "os.environ.get('USERPROFILE', '')], 'leaked': [','.join(leaked)], 'cwd': [os.getcwd()]})\n"
     )
     path = tmp_path / "probe.py"
     path.write_text(probe, encoding="utf-8")
@@ -434,8 +434,13 @@ def test_b9_worker_write_confinement_read_roots_and_scrubbed_env(tmp_path):
     # workspace (dfp-worker-*), never the real user profile.
     home_value = str(frame["home"].iloc[0])
     assert "dfp-worker" in home_value and home_value.endswith("home")
-    real_home = str(Path.home())
-    assert not home_value.lower().startswith(real_home.lower())
+    # An owned temporary workspace can legitimately be below the user's home.
+    # The child must receive that exact workspace's private home, not the real home.
+    child_cwd = Path(str(frame["cwd"].iloc[0])).resolve()
+    assert Path(home_value).resolve() == child_cwd / "home"
+    assert Path(home_value).resolve() != Path.home().resolve()
+    assert child_cwd.name.startswith("dfp-worker-")
+    assert not child_cwd.exists(), "Disposable worker workspace must be removed"
 
 
 def os_devnull_in(policy):
@@ -528,7 +533,15 @@ def test_b12_b_surface_capabilities_and_cli_flags_unchanged():
     from scripts.cli import _build_argument_parser
     parser = _build_argument_parser()
     options = {a for a in parser._option_string_actions if a not in ("-h", "--help")}
-    assert len(options) == 22, sorted(options)
+    expected = {
+        '--analyze-only', '--approve-preview', '--columns', '--convert',
+        '--defer-source-choice', '--discard-source', '--extractor-script',
+        '--goal', '--json-output', '--keep-source', '--list-sources',
+        '--non-interactive', '--outdir', '--output-format', '--overwrite',
+        '--preview-only', '--query', '--rows', '--save-source', '--source',
+        '--table', '--yes', '--resume-preview', '--discard-preview',
+    }
+    assert options == expected
 
     from scripts.custom_source import CustomFetcher
     params = list(inspect_mod.signature(CustomFetcher.__init__).parameters)

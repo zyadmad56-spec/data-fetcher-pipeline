@@ -72,26 +72,54 @@ def _scrubbed_warnings(warnings_list: list) -> list:
     from scripts.adapters.sanitization import sanitize_display_text
     return [sanitize_display_text(str(w), max_len=500) for w in warnings_list]
 
+def _withheld_advisories(warnings_list: list) -> list:
+    """Replace fetcher advisory prose with a controlled count.
+
+    Fetcher warnings interleave locally authored text with external content
+    (provider bodies, repo paths, guard exceptions).  Escaping is not semantic
+    neutralization, so the automatic envelope reports only the count; the
+    escaped detail stays in the human-only preview artifact.
+    """
+    count = len(warnings_list)
+    if not count:
+        return []
+    return [f'{count} retrieval advisory(ies) withheld from automatic channels; '
+            'the human preview artifact carries the escaped detail.']
+
 def _fetch_envelope_meta(fetcher) -> dict:
     """Build envelope metadata from fetcher state, defensively (mock-safe)."""
     def typed(attr, default):
         val = getattr(fetcher, attr, default)
         return val if isinstance(val, type(default)) else default
 
-    warnings_raw = getattr(fetcher, "completeness_warnings", [])
-    warnings_list = [str(w) for w in warnings_raw] if isinstance(warnings_raw, list) else []
-    artifact_warnings = getattr(fetcher, 'artifact_warnings', [])
-    if isinstance(artifact_warnings, list):
-        warnings_list.extend(str(w) for w in artifact_warnings)
+    # Trusted channel: locally authored degraded/artifact-write notes keep
+    # their sanitized text.  Mixed-origin slots (external content can land in
+    # completeness/artifact warnings) are withheld to a controlled count.
+    degraded = getattr(fetcher, 'degraded_warnings', [])
+    degraded_texts = [str(w) for w in degraded] if isinstance(degraded, list) else []
+    warnings_list = _scrubbed_warnings(degraded_texts)
+    mixed_count = 0
+    for slot in ('completeness_warnings', 'artifact_warnings'):
+        slot_raw = getattr(fetcher, slot, [])
+        if isinstance(slot_raw, list):
+            # Notes already surfaced through the trusted degraded channel are
+            # not double-counted as withheld.
+            mixed_count += sum(1 for w in slot_raw if str(w) not in degraded_texts)
+    if mixed_count:
+        warnings_list.extend(_withheld_advisories(['x'] * mixed_count))
     complete_raw = getattr(fetcher, "complete", True)
     complete = complete_raw if isinstance(complete_raw, bool) else True
 
     trunc_raw = getattr(fetcher, "truncation", None)
 
-    from scripts.adapters.sanitization import sanitize_display_text
+    from scripts.adapters.sanitization import _origin_only_url
     return {
-        "source_url": typed("dataset_url", ""),
-        "resolved_title": sanitize_display_text(typed("resolved_title", ""), max_len=300) or None,
+        # Metadata boundary: titles are arbitrary external text and URLs may
+        # carry token-bearing query AND path segments — the automatic envelope
+        # keeps a scheme://host origin reference only, and withholds advisory
+        # prose from automatic channels.
+        "source_url": _origin_only_url(typed("dataset_url", "")),
+        "resolved_title": None,
         "sha256": typed("last_sha256", ""),
         "bytes": typed("last_bytes", 0),
         "description_path": typed("last_description_path", ""),
@@ -100,7 +128,7 @@ def _fetch_envelope_meta(fetcher) -> dict:
         "original_sha256": typed("last_original_sha256", ""),
         "original_bytes": typed("last_original_bytes", 0),
         "complete": complete,
-        "warnings": _scrubbed_warnings(warnings_list),
+        "warnings": warnings_list,
         "truncation": trunc_raw if isinstance(trunc_raw, dict) else None,
     }
 
@@ -109,9 +137,10 @@ def interactive_flow(outdir=None):
     return interview(outdir)
 
 
-def run_conversion(target_format: str, filepath: str, overwrite: bool = False) -> str:
+def run_conversion(target_format: str, filepath: str, overwrite: bool = False,
+                   lexical: bool = True) -> str:
     from scripts.composition import convert_file
-    return convert_file(target_format, filepath, overwrite)
+    return convert_file(target_format, filepath, overwrite, lexical)
 
 @dataclass
 class _RunState:
@@ -133,13 +162,25 @@ def _build_argument_parser():
     parser.add_argument("--analyze-only", action="store_true", help="Assess custom URL without extraction")
     parser.add_argument("--extractor-script", metavar="PATH", help="Run this reviewed extractor file for --source custom (bounded preview first; approval uses the staged bytes)")
     parser.add_argument("--approve-preview", metavar="ID", help="Approve a bounded preview by its preview ID for a full custom fetch (runs the staged extractor bytes)")
+    parser.add_argument("--resume-preview", metavar="ID", help="Resume a cached built-in preview from --outdir/.previews by ID (claims it once; no source/query re-entry)")
+    parser.add_argument("--discard-preview", metavar="ID", help="Remove one cached built-in preview record from --outdir/.previews (no network, no source/query)")
     parser.add_argument("--save-source", metavar="NAME", help="Register a custom source after successful fetch")
     parser.add_argument("--defer-source-choice", action="store_true", help="Keep a pending custom extractor while the agent asks whether to register it")
     parser.add_argument("--keep-source", metavar="ID", help="Register a pending extractor using --save-source NAME; no new download")
     parser.add_argument("--discard-source", metavar="ID", help="Discard a pending extractor; preserve downloaded datasets")
     parser.add_argument("--columns", default="", help="Required column names, comma separated; project exact names")
     parser.add_argument("--table", type=int, help="Zero-based HTML table index for custom extraction")
-    parser.add_argument("--output-format", default="csv", choices=['csv', 'json', 'excel', 'xlsx', 'parquet', 'sqlite', 'db'])
+    class _ExplicitOutputFormat(argparse.Action):
+        """Record whether the caller actually passed --output-format: the
+        resume continuation must never let the parser default silently
+        override a preview's recorded output choice."""
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.dest, values)
+            setattr(namespace, 'output_format_explicit', True)
+
+    parser.add_argument("--output-format", default="csv", action=_ExplicitOutputFormat,
+                        choices=['csv', 'json', 'excel', 'xlsx', 'parquet', 'sqlite', 'db'])
+    parser.set_defaults(output_format_explicit=False)
     parser.add_argument("--goal", default="", help="Human-readable request; not an automatic content filter")
     parser.add_argument("--list-sources", action="store_true", help="Print supported data sources and exit")
     parser.add_argument("--json-output", action="store_true", help="Provide machine-readable JSON output")
@@ -168,7 +209,8 @@ def _source_listing():
     return {'status': 'success', 'sources': [
         {'key': key, 'platform': catalog[key].get('platform', key.title()),
          'query_format': catalog[key].get('query_format', 'free text'),
-         'example': catalog[key].get('example', ''), 'auth': catalog[key].get('auth', 'none')}
+         'example': catalog[key].get('example', ''), 'auth': catalog[key].get('auth', 'none'),
+         **({'website': catalog[key]['website']} if 'website' in catalog[key] else {})}
         for key in list_sources()
     ]}
 
@@ -236,38 +278,66 @@ def _configure_fetcher(fetcher, args):
     fetcher.table_index = args.table
 
 
-def _preview_envelope(fetcher, source):
+def _preview_envelope(fetcher, source, record=None):
     """Agent-facing preview envelope: ZERO cell values, ZERO column names.
 
-    The sample rows and column names are written to the human-only
-    ``_human_preview.md`` artifact instead; the envelope carries only counts,
-    dtypes, the artifact path and (for custom flows) the preview ID that a
-    later ``--approve-preview`` must present.
+    The bounded display sample (first 5 rows x first 30 columns) is written
+    to the human-only Markdown table artifact, which the chat host renders
+    natively inside the conversation.  The envelope carries only bounded
+    counts, at most 30 dtype tokens, the validated display reference, the
+    validated direct source URL for the human table, and (for flows with a
+    persistent record or receipt) the opaque preview ID that a later
+    resume/approve command must present.
     """
-    from scripts.adapters.sanitization import write_human_preview
+    from scripts.adapters.sanitization import (
+        write_human_preview, _origin_only_url, _validated_source_link)
     frame = fetcher.preview_frame
     warnings = _fetch_envelope_meta(fetcher)['warnings']
     try:
         scope = fetcher.preview_transfer_scope()
     except Exception:
         scope = getattr(fetcher, 'transfer_scope', '') or ''
-    title = f'{source} dataset preview: {getattr(fetcher, "query", "")}'
-    preview_path = write_human_preview(
-        frame, str(getattr(fetcher, 'dataset_url', '')), title,
-        Path(getattr(fetcher, 'outdir', '.')), scope, warnings)
+    title = f'{source} dataset preview'
+    if record is not None:
+        # Validated presentation reference at the handoff boundary: identity,
+        # containment and artifact hash are re-checked before it is returned.
+        preview_path = record._presentation_validated()
+    else:
+        preview_path = write_human_preview(
+            frame, str(getattr(fetcher, 'dataset_url', '')), title,
+            Path(getattr(fetcher, 'outdir', '.')), scope, warnings)
+    dtypes = [str(dtype) for dtype in frame.dtypes]
+    dataset_url = str(getattr(fetcher, 'dataset_url', ''))
+    # The human chat table may carry the full URL path only when the source
+    # URL is verified public (verbatim from a shipped reviewed registry);
+    # user-typed URLs keep origin-only display there, since private tokens
+    # can appear in URL paths.
+    if bool(getattr(fetcher, 'dataset_url_verified_public', False)):
+        display_url = _validated_source_link(dataset_url)
+    else:
+        display_url = _origin_only_url(dataset_url)
     envelope = {
         'status': 'success', 'mode': 'preview', 'source': source,
-        'source_url': getattr(fetcher, 'dataset_url', ''),
+        'source_url': _origin_only_url(dataset_url),
+        'source_url_display': display_url,
         'preview_path': str(Path(preview_path).resolve()),
+        'preview_display': 'native-markdown-table',
         'rows_sampled': int(len(frame)),
         'column_count': int(len(frame.columns)),
-        'dtypes': [str(dtype) for dtype in frame.dtypes],
+        'dtypes': dtypes[:30],
         'transfer_scope': scope, 'output_path': None,
         'warnings': warnings,
     }
+    if len(dtypes) > 30:
+        envelope['dtypes_truncated'] = True
     receipt = getattr(fetcher, '_pending_receipt', None)
     if receipt is not None:
         envelope['preview_id'] = receipt.preview_id
+    elif record is not None:
+        envelope['preview_id'] = record.preview_id
+        envelope['cache'] = {'complete': bool(record.complete),
+                             'scope': 'complete cached bytes' if record.complete
+                             else 'bounded sample only; a resumed fetch transfers the full dataset'}
     return envelope
 
 
@@ -348,10 +418,12 @@ def _fetch_dataset(args, state):
     csv_path = state.fetcher.run()
     metrics = get_metrics()
     if args.preview_only:
-        return _preview_envelope(state.fetcher, args.source)
+        record = _persist_builtin_preview(args, state.fetcher)
+        return _preview_envelope(state.fetcher, args.source, record=record)
     from scripts.application.complete import complete_dataset
+    from functools import partial
     converted, registered, pending = complete_dataset(
-        csv_path, args.output_format, run_conversion,
+        csv_path, args.output_format, partial(run_conversion, lexical=False),
         lambda: _retain_custom_source(state.fetcher, args))
     envelope = _saved_envelope(state.fetcher, args, csv_path)
     envelope.update(_network_envelope(args.source, metrics))
@@ -359,7 +431,232 @@ def _fetch_dataset(args, state):
     return envelope
 
 
+def _discard_preview(args):
+    """No-network decline of one cached built-in preview (task-contained)."""
+    from scripts.adapters.preview_store import PreviewStore
+    store = PreviewStore(Path(args.outdir) / '.previews')
+    discarded = store.discard(args.discard_preview)
+    return {'status': 'success', 'discarded': bool(discarded),
+            'preview_id': args.discard_preview,
+            'note': 'already absent' if not discarded else 'record removed'}
+
+
+def _persist_builtin_preview(args, fetcher):
+    """Persist the built-in preview record with honest completeness.
+
+    When the preview transfer ended within the cap the run already owns the
+    complete source bytes (``_temp_payload`` set by the exhausted prefix
+    read) and they become the record's payload of record with
+    ``complete=True``.  Otherwise the record is a bounded 5-row sample with
+    ``complete=False`` — five sample rows are never labeled a complete
+    result.  Custom sources keep their receipt flow and create no store
+    record.  Returns the record, or None when no record applies.
+    """
+    source = str(args.source or '')
+    if source == 'custom' or source.startswith('custom_'):
+        return None
+    if getattr(fetcher, '_pending_receipt', None) is not None:
+        return None
+    from scripts.adapters.preview_store import PreviewStore, PreviewIdentity
+    sample = getattr(fetcher, 'preview_frame', None)
+    if sample is None:
+        return None
+    columns = getattr(fetcher, 'required_columns', None)
+    identity = PreviewIdentity(
+        source=source, query=str(args.query or ''),
+        columns=tuple(columns) if isinstance(columns, (list, tuple)) else (),
+        row_limit=int(args.rows or 0),
+        output_format=str(args.output_format or 'csv').lower())
+    complete = False
+    payload_bytes = None
+    payload_path = getattr(fetcher, '_temp_payload', None)
+    if payload_path is not None and getattr(fetcher, '_preview_payload_owned', False):
+        try:
+            payload_bytes = Path(payload_path).read_bytes()
+            complete = True
+        finally:
+            # The persistence step owns the kept bytes' cleanup.
+            try:
+                Path(payload_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            fetcher._temp_payload = None
+            fetcher._preview_payload_owned = False
+    parse = None
+    if payload_bytes is not None:
+        sep_fn = getattr(fetcher, '_payload_sep', None)
+        comp_fn = getattr(fetcher, '_payload_compression', None)
+        parse = {'sep': sep_fn() if callable(sep_fn) else ',',
+                 'compression': comp_fn() if callable(comp_fn) else None}
+    warnings = []
+    for slot in ('completeness_warnings', 'degraded_warnings', 'artifact_warnings'):
+        slot_raw = getattr(fetcher, slot, [])
+        if isinstance(slot_raw, list):
+            warnings.extend(str(w) for w in slot_raw)
+    try:
+        scope = fetcher.preview_transfer_scope()
+    except Exception:
+        scope = getattr(fetcher, 'transfer_scope', '') or ''
+    store = PreviewStore(Path(args.outdir) / '.previews')
+    return store.create(identity, sample, complete=complete,
+                        payload_bytes=payload_bytes, parse=parse,
+                        source_url=str(getattr(fetcher, 'dataset_url', '') or ''),
+                        warnings=warnings, transfer_scope=str(scope or ''))
+
+
+def _explicit_output_format(args) -> str | None:
+    """The output format only when the caller actually passed the flag."""
+    explicit = getattr(args, 'output_format_explicit', False)
+    return str(args.output_format or '').lower() if explicit else None
+
+
+def _frame_from_record(record):
+    """Typed pipeline frame from a record: exact source bytes re-typed under
+    the recorded provider parse contract (separator/compression), or the
+    codec frame.  Never the schema-less lexical standalone read."""
+    import io
+    import pandas as pd
+    payload_bytes = getattr(record, 'payload_bytes', None)
+    if payload_bytes:
+        parse = getattr(record, 'parse', None) or {}
+        return pd.read_csv(io.BytesIO(payload_bytes), sep=parse.get('sep', ','),
+                           compression=parse.get('compression'), low_memory=False)
+    return record.frame
+
+
+def _restore_provenance(state_fetcher, record):
+    """Restore source identity and original bytes before normal persistence
+    so the profile, manifest and retained original describe the REAL source.
+
+    The cached bytes are copied to a disposable file inside the record
+    directory; the retention step renames it into the canonical
+    ``_source_<sha>`` artifact, so the store's own payload is never moved.
+    """
+    payload_bytes = getattr(record, 'payload_bytes', None)
+    parse = getattr(record, 'parse', None) or {}
+    if payload_bytes:
+        restore = Path(record._directory) / 'restore.tmp'
+        restore.write_bytes(payload_bytes)
+        state_fetcher._temp_payload = restore
+    source_url = getattr(record, 'source_url', '') or ''
+    if source_url:
+        state_fetcher.dataset_url = source_url
+    state_fetcher.payload_compression = parse.get('compression')
+    state_fetcher.payload_sep = parse.get('sep', ',')
+
+
+def _resume_preview(args):
+    """Continue an approved built-in preview through the recorded intent.
+
+    One explicit human approval (the claimed record) authorizes exactly the
+    recorded source, query, columns, row limit and output format; supplied
+    selection flags and output-format drift are rejected before any claim,
+    transfer or write.  A complete record is served from its owned bytes with
+    zero further transfers through the normal artifact persistence path
+    (profile, manifest, provenance); a bounded record runs the recorded
+    request in full through the normal fetch pipeline — no manual redo.  A
+    recoverable filesystem failure releases the claim instead of losing the
+    approval; duplicates cannot double-save.
+    """
+    from scripts.adapters.preview_store import PreviewStore
+    store = PreviewStore(Path(args.outdir) / '.previews')
+    record = store.load(args.resume_preview)
+    identity = record.identity
+    explicit = _explicit_output_format(args)
+    if explicit and explicit != identity.output_format:
+        raise DataFetchError(
+            'The supplied --output-format does not match the approved preview '
+            'request; run a fresh preview to change the output intent.',
+            code='APPROVAL_MISMATCH')
+    requested_format = identity.output_format or 'csv'
+    # Approval-handoff revalidation: changed/stale/foreign artifacts fail
+    # here, BEFORE the claim, any transfer or any write.
+    store.verify_ready(args.resume_preview)
+    record = store.claim(args.resume_preview, identity)
+    import hashlib as _hashlib
+    try:
+        config = _fetch_config(args)
+        state_fetcher = get_fetcher(identity.source, identity.query, args.outdir, config)
+        state_fetcher.required_columns = list(identity.columns)
+        state_fetcher.row_limit = int(identity.row_limit or 0)
+        state_fetcher.auto_approve = True
+        state_fetcher.preview_only = False
+        progress = store.load_progress(args.resume_preview)
+        if progress:
+            # Recovery receipt: the fetch/save transaction already completed
+            # from the owned bytes; finish conversion with no re-transfer.
+            csv_path = Path(progress['csv_path'])
+            digest = _hashlib.sha256(csv_path.read_bytes()).hexdigest()
+            if not csv_path.is_file() or digest != progress.get('sha256'):
+                raise DataFetchError('The recovery receipt does not match the saved dataset.',
+                                     code='PREVIEW_TAMPERED')
+            state_fetcher.rows_count = int(progress.get('rows', 0) or 0)
+            state_fetcher.cols_count = int(progress.get('cols', 0) or 0)
+        elif record.complete:
+            from scripts.adapters.artifacts import FileArtifactStore
+            from scripts.application.frame_policy import limit_rows, select_columns
+            from scripts.core.names import sanitize_name
+            frame = _frame_from_record(record)
+            frame = select_columns(frame, state_fetcher.required_columns)
+            frame = limit_rows(frame, state_fetcher, None)
+            _restore_provenance(state_fetcher, record)
+            csv_path = FileArtifactStore(state_fetcher).save_csv(
+                frame, sanitize_name(identity.query) + '_raw.csv')
+        else:
+            source_url = getattr(record, 'source_url', '') or ''
+            if source_url:
+                state_fetcher.dataset_url = source_url
+            csv_path = state_fetcher.run()
+            if not csv_path:
+                raise DataFetchError('The approved continuation produced no dataset.',
+                                     code='INTERNAL')
+        store.write_progress(args.resume_preview, {
+            'stage': 'saved', 'csv_path': str(csv_path),
+            'sha256': _hashlib.sha256(Path(csv_path).read_bytes()).hexdigest(),
+            'rows': int(getattr(state_fetcher, 'rows_count', 0) or 0),
+            'cols': int(getattr(state_fetcher, 'cols_count', 0) or 0)})
+        from scripts.application.complete import complete_dataset
+        from functools import partial
+        converted, registered, pending = complete_dataset(
+            str(csv_path), requested_format, partial(run_conversion, lexical=False),
+            lambda: (None, None))
+        store.clear_progress(args.resume_preview)
+    except Exception:
+        # A recoverable local fault anywhere in the save/convert lifecycle
+        # never consumes the human approval. When the completion receipt was
+        # written, a retry finishes from the already owned bytes — releasing
+        # the claim cannot duplicate a transfer or commit.
+        store.release_claim(args.resume_preview)
+        raise
+    envelope = {'status': 'success', 'resumed_preview': args.resume_preview,
+                'source': identity.source, 'query': identity.query,
+                'output_format': requested_format,
+                'output_path': str(Path(csv_path).resolve()),
+                'rows': int(getattr(state_fetcher, 'rows_count', 0) or 0),
+                'columns': int(getattr(state_fetcher, 'cols_count', 0) or 0),
+                'complete': bool(getattr(state_fetcher, 'complete', True))}
+    envelope.update(_fetch_envelope_meta(state_fetcher))
+    envelope.update({'converted_file': converted, 'registered_source': registered,
+                     'pending_source_id': pending})
+    return envelope
+
+
 def _execute(args, state):
+    if args.discard_preview:
+        if any([args.source, args.query, args.convert, args.list_sources,
+                args.resume_preview, args.approve_preview]):
+            raise DataFetchError(
+                '--discard-preview is a no-network cache operation; it accepts '
+                'only --outdir and --json-output.', code='ARG_INVALID')
+        return _discard_preview(args)
+    if args.resume_preview:
+        if args.source or args.query or args.rows or args.columns \
+                or args.approve_preview or args.convert or args.list_sources \
+                or args.preview_only:
+            raise DataFetchError(
+                '--resume-preview rejects selection changes; the cached request '
+                'identity governs the fetch.', code='ARG_INVALID')
+        return _resume_preview(args)
     if args.keep_source or args.discard_source:
         return _source_choice(args)
     if args.list_sources:
@@ -372,21 +669,23 @@ def _execute(args, state):
 
 
 def _failure_envelope(exc):
-    from scripts.adapters.sanitization import scrub_exception_message
     if isinstance(exc, DataFetchError):
-        return {'status': 'error', 'code': exc.code,
-                'message': scrub_exception_message(exc, exc.code)}, exc.exit_code
-    if isinstance(exc, (KeyboardInterrupt, EOFError)):
+        code, exit_code = exc.code, exc.exit_code
+    elif isinstance(exc, (KeyboardInterrupt, EOFError)):
         code = 'ABORTED' if isinstance(exc, KeyboardInterrupt) else 'INTERACTIVE_REQUIRED'
         return {'status': 'error', 'code': code, 'message':
                 'Interactive input required but unavailable. Add --yes flag for non-interactive mode.'}, (
                     130 if isinstance(exc, KeyboardInterrupt) else 1)
-    if isinstance(exc, (ValueError, RuntimeError, ImportError, OSError)):
-        code = _fallback_code(exc)
-        return {'status': 'error', 'code': code,
-                'message': scrub_exception_message(exc, code)}, 1
-    return {'status': 'error', 'code': 'INTERNAL',
-            'message': scrub_exception_message(f'{type(exc).__name__}: {exc}', 'INTERNAL')}, 1
+    elif isinstance(exc, (ValueError, RuntimeError, ImportError, OSError)):
+        code, exit_code = _fallback_code(exc), 1
+    else:
+        code, exit_code = 'INTERNAL', 1
+    # Envelopes carry a known code and locally authored prose only; exception
+    # text may hold fetched cells, headers, URLs or worker output.
+    from scripts.adapters.sanitization import trusted_failure_code, trusted_failure_message
+    code = trusted_failure_code(code)
+    return {'status': 'error', 'code': code,
+            'message': trusted_failure_message(code)}, exit_code
 
 
 def _cleanup_fetcher(fetcher):
@@ -396,17 +695,21 @@ def _cleanup_fetcher(fetcher):
     try:
         cleanup()
         return []
-    except Exception as exc:
+    except Exception:
         # A provider cleanup hook may raise any library exception. Keep the
-        # primary fetch result and disclose the resource failure to the caller.
-        return [f'Temporary extractor cleanup failed ({type(exc).__name__}): {exc}']
+        # primary fetch result and disclose the failure without any exception
+        # detail: both its prose and its class name are attacker-chosen text
+        # for reviewed-but-untrusted extractor code.
+        return ['Temporary extractor cleanup failed.']
 
 
 def _print_sources(sources, stdout):
     print('\nSupported Data Sources:\n' + '-' * 55, file=stdout)
     print(f"{'CLI Key':<15} | {'Platform / Title':<35}\n" + '-' * 55, file=stdout)
     for source in sources:
-        print(f"{source['key']:<15} | {source['platform']:<35}", file=stdout)
+        website = source.get('website')
+        label = f"{source['platform']} ({website})" if website else source['platform']
+        print(f"{source['key']:<15} | {label:<35}", file=stdout)
     print('-' * 55, file=stdout)
 
 
@@ -467,7 +770,7 @@ class _ProgressCapture:
 def main() -> None:
     if _startup_error is not None:
         print(json.dumps({'status': 'error', 'code': 'STARTUP_FAILURE',
-                          'message': f'Engine failed to initialize: {_startup_error}. '
+                          'message': 'Engine failed to initialize. '
                                      'Reinstall dependencies from pyproject.toml.'}))
         sys.exit(3)
     args = _parse_arguments()
