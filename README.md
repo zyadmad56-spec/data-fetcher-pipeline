@@ -10,7 +10,9 @@ Fetch datasets, review a sample, and save them with a Markdown profile and a rec
 
 ### Project video
 
-The [updated Full HD demo](media/data_fetcher_promo_en.mp4) shows the source catalog, the sample table in chat, and the decision to save or discard a preview. It also walks through the available conversion formats.
+[![Watch the updated Full HD demo](media/data_fetcher_promo_preview.gif)](media/data_fetcher_promo_en.mp4)
+
+Click the preview to play the full 52-second demo. It shows the source catalog, the sample table in chat, and the decision to save or discard a preview.
 
 [Watch the earlier demo](https://github.com/user-attachments/assets/853d3944-53ee-4cea-8d19-a223a5a990fb).
 
